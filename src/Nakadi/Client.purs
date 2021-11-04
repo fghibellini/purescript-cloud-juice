@@ -287,15 +287,17 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
     retryPolicy ∷ RetryPolicyM m
     retryPolicy = capDelay (3.0 # Minutes) $ fullJitterBackoff (200.0 # Milliseconds)
     retryCheck ∷ LogWarnFn -> RetryStatus -> StreamReturn -> m Boolean
-    retryCheck logWarn _ res = liftEffect $
-      case res of
-        StreamClosed ->
-          logWarn Nothing "Stream closed by Nakadi" $> true
-        FailedToStream err -> err #
-          on _conflict (\(E409 p) -> logWarn (Just p) "Failed to start streaming." $> true)
-          (default (pure true))
-        FailedToCommit err -> err #
-          on _unprocessableEntity (\(E422 p) -> logWarn (Just p) "Failed to commit cursor." $> true)
-          (default (pure true))
-
+    retryCheck logWarn _ res =
+      liftEffect
+        $ case res of
+            StreamClosed -> logWarn Nothing "Stream closed by Nakadi" $> true
+            FailedToStream err ->
+              err
+                # on _conflict (\(E409 p) -> logWarn (Just p) "Failed to start streaming." $> true)
+                    (default (pure true))
+            ErrorThrown err -> pure true
+            FailedToCommit err ->
+              err
+                # on _unprocessableEntity (\(E422 p) -> logWarn (Just p) "Failed to commit cursor." $> true)
+                    (default (pure true))
   retrying retryPolicy (retryCheck env.logWarn) (const go)

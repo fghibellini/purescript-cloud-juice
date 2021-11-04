@@ -17,9 +17,9 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String as String
 import Data.Variant (Variant)
 import Effect (Effect)
-import Effect.Aff (Aff, Error, launchAff_, message, runAff_)
+import Effect.Aff (Aff, Error, message, runAff_)
 import Effect.Aff.AVar (AVar)
-import Effect.Aff.AVar as AVar
+import Effect.AVar as AVar
 import Effect.Class (liftEffect)
 import Effect.Class.Console as Console
 import Effect.Exception (error, throwException)
@@ -58,6 +58,7 @@ type CommitError = Variant
 data StreamReturn
   = FailedToStream StreamError
   | FailedToCommit CommitError
+  | ErrorThrown Error
   | StreamClosed
 
 type EventHandler = Array Event -> Aff Unit
@@ -82,8 +83,7 @@ postStream { resultVar, buffer, bufsize } streamParams commitCursors subscriptio
   let _ = HTTP.statusMessage response
   let isGzipped = getHeader "Content-Encoding" response <#> String.contains (String.Pattern "gzip") # fromMaybe false
   let baseStream = HTTP.responseAsStream response
-
-  Stream.onClose baseStream (launchAff_ $ AVar.put StreamClosed resultVar)
+  Stream.onClose baseStream (void $ AVar.tryPut StreamClosed resultVar)
   stream <-
     if isGzipped
     then do
@@ -102,15 +102,9 @@ postStream { resultVar, buffer, bufsize } streamParams commitCursors subscriptio
       handleRequest { resultVar, buffer, bufsize } streamParams stream commit eventHandler env
   where
     mkCommit xStreamId cursors =
-      if cursors == mempty
-      then do pure (Right unit)
-      else commitCursors subscriptionId xStreamId cursors
-
-handleUnhandledError ∷ Either Error Unit -> Effect Unit
-handleUnhandledError = case _ of
-    Left e -> do
-      liftEffect $ throwException (error $ "Error in processing " <> show e)
-    Right a -> pure unit
+      if cursors == mempty then do pure (Right unit)
+      else
+        commitCursors subscriptionId xStreamId cursors
 
 handlePutAVarError ∷ Either Error Unit -> Effect Unit
 handlePutAVarError = case _ of
@@ -131,48 +125,60 @@ handleRequest
   -> Env env
   -> Effect Unit
 handleRequest { resultVar, buffer, bufsize } streamParams resStream commit eventHandler env = do
-  callback <- splitAtNewline buffer bufsize  handle
-  onData  resStream callback
-  onEnd   resStream (launchAff_ $ AVar.put StreamClosed resultVar)
-  onError resStream (\e -> do
-    env.logWarn Nothing $ "Error in read stream " <> message e
-    launchAff_ $ AVar.put StreamClosed resultVar
+  callback <- splitAtNewline buffer bufsize handle
+  onData resStream callback
+  onEnd resStream (void $ AVar.tryPut StreamClosed resultVar)
+  onError resStream
+    ( \e -> do
+        env.logWarn Nothing $ "Error in read stream " <> message e
+        void $ AVar.tryPut StreamClosed resultVar
     )
   where
-    handle eventStreamBatch = runAff_ handleUnhandledError $ do
-        let parseFn = JSON.read ∷ Foreign -> E SubscriptionEventStreamBatch
-        batch <- either jsonErr pure (parseFn eventStreamBatch)
-        traverse_ eventHandler batch.events
-        commitResult <- runReaderT (commit [batch.cursor]) env
-        case commitResult of
-          Left err ->
-            AVar.put (FailedToCommit err) resultVar
-          Right other -> do
-            pure unit
+    handle eventStreamBatch =
+      runAff_ handleAffResult
+        $ do
+            let parseFn = JSON.read ∷ Foreign -> E SubscriptionEventStreamBatch
+            batch <- either jsonErr pure (parseFn eventStreamBatch)
+            traverse_ eventHandler batch.events
+            commitResult <- runReaderT (commit [ batch.cursor ]) env
+            case commitResult of
+              Left err -> void $ liftEffect $ AVar.tryPut (FailedToCommit err) resultVar
+              Right other -> do
+                pure unit
+
+    handleAffResult ∷ Either Error Unit -> Effect Unit
+    handleAffResult = case _ of
+      Right a -> pure unit
+      Left e -> do
+        let err = error $ "Error in processing " <> show e
+        void $ AVar.tryPut (ErrorThrown err) resultVar
 
 handleRequestErrors ∷ ∀ r. AVar StreamReturn → Stream (read ∷ Read | r) -> Effect Unit
 handleRequestErrors resultVar response = do
   buffer <- liftEffect $ Ref.new ""
   onDataString response UTF8 (\x -> Ref.modify_ (_ <> x) buffer)
-  onEnd response $ runAff_ throwError do
-    str <- liftEffect $ Ref.read buffer
-    liftEffect <<< Console.log $ "Result: " <> str
-    res <- (readJSON >>> either jsonErr (pure <<< Left)) str
-    result <- res # catchErrors case _ of
-      p @ { status: 400 } -> pure $ lmap e400 res
-      p @ { status: 401 } -> pure $ lmap e401 res
-      p @ { status: 403 } -> pure $ lmap e403 res
-      p @ { status: 404 } -> pure $ lmap e404 res
-      p @ { status: 409 } -> pure $ lmap e409 res
-      p -> unhandled p
-    case result of
-      Left err -> AVar.put (FailedToStream err) resultVar
-      Right _ -> pure unit
+  onEnd response
+    $ runAff_ handleAffResult do
+        str <- liftEffect $ Ref.read buffer
+        liftEffect <<< Console.log $ "Result: " <> str
+        res <- (readJSON >>> either jsonErr (pure <<< Left)) str
+        res
+          # catchErrors case _ of
+              p@{ status: 400 } -> pure $ lmap e400 res
+              p@{ status: 401 } -> pure $ lmap e401 res
+              p@{ status: 403 } -> pure $ lmap e403 res
+              p@{ status: 404 } -> pure $ lmap e404 res
+              p@{ status: 409 } -> pure $ lmap e409 res
+              p -> unhandled p
   where
-  throwError = case _ of
-    Left e -> do
-      liftEffect $ throwException (error $ "Error in processing " <> show e)
-    Right a -> pure unit
+    handleAffResult ∷ _ -> Effect _
+    handleAffResult = case _ of
+      Left e -> do
+        let err = error $ "Error in processing " <> show e
+        void $ AVar.tryPut (ErrorThrown err) resultVar
+      Right result -> case result of
+        Left err -> void $ AVar.tryPut (FailedToStream err) resultVar
+        Right _ -> pure unit
 
 getHeader ∷ String -> HTTP.Response -> Maybe String
 getHeader headerName response = do
