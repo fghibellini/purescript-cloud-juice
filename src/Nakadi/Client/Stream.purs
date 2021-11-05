@@ -161,24 +161,21 @@ handleRequestErrors resultVar response = do
     $ runAff_ handleAffResult do
         str <- liftEffect $ Ref.read buffer
         liftEffect <<< Console.log $ "Result: " <> str
-        res <- (readJSON >>> either jsonErr (pure <<< Left)) str
-        res
-          # catchErrors case _ of
-              p@{ status: 400 } -> pure $ lmap e400 res
-              p@{ status: 401 } -> pure $ lmap e401 res
-              p@{ status: 403 } -> pure $ lmap e403 res
-              p@{ status: 404 } -> pure $ lmap e404 res
-              p@{ status: 409 } -> pure $ lmap e409 res
-              p -> unhandled p
+        res <- (readJSON >>> either jsonErr pure) str
+        case res of
+          p@{ status: 400 } -> pure $ e400 res
+          p@{ status: 401 } -> pure $ e401 res
+          p@{ status: 403 } -> pure $ e403 res
+          p@{ status: 404 } -> pure $ e404 res
+          p@{ status: 409 } -> pure $ e409 res
+          p -> unhandled p
   where
     handleAffResult ∷ _ -> Effect _
     handleAffResult = case _ of
       Left e -> do
         let err = error $ "Error in processing " <> show e
         void $ AVar.tryPut (ErrorThrown err) resultVar
-      Right result -> case result of
-        Left err -> void $ AVar.tryPut (FailedToStream err) resultVar
-        Right _ -> pure unit
+      Right err -> void $ AVar.tryPut (FailedToStream err) resultVar
 
 getHeader ∷ String -> HTTP.Response -> Maybe String
 getHeader headerName response = do
