@@ -277,9 +277,11 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
     go ∷ m StreamReturn
     go = do
         resultVar <- liftAff AVar.empty
+        batchQueue <- liftAff AVar.empty
         let postArgs = { resultVar
                        , buffer
                        , bufsize
+                       , batchQueue
                        }
         liftEffect $ listen postArgs
         liftAff $ AVar.take resultVar
