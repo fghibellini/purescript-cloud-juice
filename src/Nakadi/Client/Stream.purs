@@ -10,7 +10,6 @@ module Nakadi.Client.Stream
 import Prelude
 
 import Control.Monad.Reader (ReaderT, runReaderT)
-import Data.Bifunctor (lmap)
 import Data.Either (Either(..), either)
 import Data.Foldable (traverse_)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
@@ -27,7 +26,7 @@ import Effect.Ref as Ref
 import Foreign (Foreign)
 import Foreign.Object as Object
 import Gzip.Gzip as Gzip
-import Nakadi.Client.Internal (catchErrors, jsonErr, unhandled)
+import Nakadi.Client.Internal (jsonErr, unhandled)
 import Nakadi.Client.Types (NakadiResponse, Env)
 import Nakadi.Errors (E400, E401, E403, E404, E409, E422, e400, e401, e403, e404, e409)
 import Nakadi.Types (Event, StreamParameters, SubscriptionCursor, SubscriptionId, XNakadiStreamId(..), SubscriptionEventStreamBatch)
@@ -93,8 +92,9 @@ postStream { resultVar, buffer, bufsize } streamParams commitCursors subscriptio
     else
       pure baseStream
 
-  if HTTP.statusCode response /= 200
-    then handleRequestErrors resultVar stream
+  let httpStatusCode = HTTP.statusCode response
+  if httpStatusCode /= 200
+    then handleRequestErrors httpStatusCode resultVar stream
     else do
       -- Positive response, so we reset the backoff
       xStreamId <- XNakadiStreamId <$> getHeaderOrThrow "X-Nakadi-StreamId" response
@@ -134,6 +134,11 @@ handleRequest { resultVar, buffer, bufsize } streamParams resStream commit event
         void $ AVar.tryPut StreamClosed resultVar
     )
   where
+    -- TODO
+    -- since this is an Effect spawning an Aff
+    -- the `data` even handler has no way when the handler finished and thus
+    -- we effectively spawn parallel handlers for what are supposed to be sequentially
+    -- processed event batches. (fixing this likely requires modifying the data handler to push to a queue)
     handle eventStreamBatch =
       runAff_ handleAffResult
         $ do
@@ -147,20 +152,21 @@ handleRequest { resultVar, buffer, bufsize } streamParams resStream commit event
                 pure unit
 
     handleAffResult ∷ Either Error Unit -> Effect Unit
-    handleAffResult = case _ of
-      Right a -> pure unit
-      Left e -> do
-        let err = error $ "Error in processing " <> show e
-        void $ AVar.tryPut (ErrorThrown err) resultVar
+    handleAffResult x = do
+      case x of
+        Right a -> pure unit
+        Left e -> do
+          let err = error $ "Error in processing " <> show e
+          void $ AVar.tryPut (ErrorThrown err) resultVar
 
-handleRequestErrors ∷ ∀ r. AVar StreamReturn → Stream (read ∷ Read | r) -> Effect Unit
-handleRequestErrors resultVar response = do
+handleRequestErrors ∷ ∀ r. Int -> AVar StreamReturn → Stream (read ∷ Read | r) -> Effect Unit
+handleRequestErrors httpStatus resultVar response = do
   buffer <- liftEffect $ Ref.new ""
   onDataString response UTF8 (\x -> Ref.modify_ (_ <> x) buffer)
   onEnd response
     $ runAff_ handleAffResult do
         str <- liftEffect $ Ref.read buffer
-        liftEffect <<< Console.log $ "Result: " <> str
+        liftEffect <<< Console.log $ "Nakadi responded with http status " <> show httpStatus <> " response body: " <> str
         res <- (readJSON >>> either jsonErr pure) str
         case res of
           p@{ status: 400 } -> pure $ e400 res
@@ -173,7 +179,7 @@ handleRequestErrors resultVar response = do
     handleAffResult ∷ _ -> Effect _
     handleAffResult = case _ of
       Left e -> do
-        let err = error $ "Error in processing " <> show e
+        let err = error $ "Error in processing non-200 response from Nakadi: " <> show e
         void $ AVar.tryPut (ErrorThrown err) resultVar
       Right err -> void $ AVar.tryPut (FailedToStream err) resultVar
 
