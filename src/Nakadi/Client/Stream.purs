@@ -152,7 +152,7 @@ handleRequest { resultVar, buffer, bufsize, batchQueue } streamParams resStream 
 
     batchConsumerLoop :: Aff Unit
     batchConsumerLoop = do
-      batch <- AVarAff.read batchQueue
+      batch <- AVarAff.take batchQueue
       _ <- handleBatch batch
       batchConsumerLoop
 
