@@ -292,7 +292,7 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
     retryCheck logWarn _ res =
       liftEffect
         $ case res of
-            StreamClosed -> logWarn Nothing "Stream closed by Nakadi" $> true
+            StreamClosed -> logWarn Nothing "Stream closed by Nakadi" $> false
             FailedToStream err ->
               err
                 # on _conflict (\(E409 p) -> logWarn (Just p) "Failed to start streaming." $> true)

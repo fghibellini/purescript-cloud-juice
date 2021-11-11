@@ -17,7 +17,7 @@ import Data.String as String
 import Data.Variant (Variant)
 import Effect (Effect)
 import Effect.AVar as AVar
-import Effect.Aff (Aff, Error, launchAff_, message, runAff_, try)
+import Effect.Aff (Aff, Error, message, runAff_)
 import Effect.Aff.AVar (AVar)
 import Effect.Aff.AVar as AVarAff
 import Effect.Class (liftEffect)
@@ -139,7 +139,7 @@ handleRequest { resultVar, buffer, bufsize, batchQueue } streamParams resStream 
   onError resStream
     ( \e -> do
         env.logWarn Nothing $ "Error in read stream " <> message e
-        void $ AVar.tryPut StreamClosed resultVar
+        void $ AVar.tryPut (ErrorThrown e) resultVar
     )
   flip runAff_ batchConsumerLoop case _ of
     Right a -> pure unit
