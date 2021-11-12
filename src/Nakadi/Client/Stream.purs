@@ -4,6 +4,7 @@ module Nakadi.Client.Stream
   , StreamError
   , CommitError
   , CommitResult
+  , BatchQueueItem(..)
   )
   where
 
@@ -17,7 +18,7 @@ import Data.String as String
 import Data.Variant (Variant)
 import Effect (Effect)
 import Effect.AVar as AVar
-import Effect.Aff (Aff, Error, message, runAff_)
+import Effect.Aff (Aff, Error, launchAff_, message, runAff_)
 import Effect.Aff.AVar (AVar)
 import Effect.Aff.AVar as AVarAff
 import Effect.Class (liftEffect)
@@ -66,12 +67,15 @@ type EventHandler = Array Event -> Aff Unit
 type CommitResult =
   NakadiResponse (forbidden ∷ E403, notFound ∷ E404, unprocessableEntity ∷ E422) Unit
 
+data BatchQueueItem = Batch Foreign | EndOfStream StreamReturn
+
 postStream
   ∷ ∀ r
   . { resultVar ∷ AVar StreamReturn
     , buffer ∷ Buffer
     , bufsize ∷ BufferSize
-    , batchQueue :: AVar Foreign
+    , batchQueue :: AVar BatchQueueItem
+    , batchConsumerLoopTerminated :: AVar Unit
     }
   -> StreamParameters
   -> (SubscriptionId -> XNakadiStreamId -> Array SubscriptionCursor -> ReaderT (Env r) Aff CommitResult)
@@ -80,7 +84,7 @@ postStream
   -> Env r
   -> HTTP.Response
   -> Effect Unit
-postStream { resultVar, buffer, bufsize, batchQueue } streamParams commitCursors subscriptionId eventHandler env response = do
+postStream { resultVar, buffer, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams commitCursors subscriptionId eventHandler env response = do
   let _ = HTTP.statusMessage response
   let isGzipped = getHeader "Content-Encoding" response <#> String.contains (String.Pattern "gzip") # fromMaybe false
   let baseStream = HTTP.responseAsStream response
@@ -101,7 +105,7 @@ postStream { resultVar, buffer, bufsize, batchQueue } streamParams commitCursors
       -- Positive response, so we reset the backoff
       xStreamId <- XNakadiStreamId <$> getHeaderOrThrow "X-Nakadi-StreamId" response
       let commit = mkCommit xStreamId
-      handleRequest { resultVar, buffer, bufsize, batchQueue } streamParams stream commit eventHandler env
+      handleRequest { resultVar, buffer, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams stream commit eventHandler env
   where
     mkCommit xStreamId cursors =
       if cursors == mempty then do pure (Right unit)
@@ -119,7 +123,8 @@ handleRequest
   . { resultVar ∷ AVar StreamReturn
     , buffer ∷ Buffer
     , bufsize ∷ BufferSize
-    , batchQueue :: AVar Foreign
+    , batchQueue :: AVar BatchQueueItem
+    , batchConsumerLoopTerminated :: AVar Unit
     }
   -> StreamParameters
   -> Stream (read ∷ Read | r)
@@ -127,7 +132,7 @@ handleRequest
   -> EventHandler
   -> Env env
   -> Effect Unit
-handleRequest { resultVar, buffer, bufsize, batchQueue } streamParams resStream commit eventHandler env = do
+handleRequest { resultVar, buffer, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams resStream commit eventHandler env = do
   -- 1. the JSON batches are collected in a queue and processed by a loop
   --    of Aff operations
   -- 2. an AVar is used as a queue since the docs mention that on multiple puts it will behave like a FIFO sequence
@@ -135,26 +140,39 @@ handleRequest { resultVar, buffer, bufsize, batchQueue } streamParams resStream 
   --    (you will only receive more batches once you commit the cursors)
   callback <- splitAtNewline buffer bufsize enqueueBatch
   onData resStream callback
-  onEnd resStream (void $ AVar.tryPut StreamClosed resultVar)
+  onEnd resStream (terminateQueue StreamClosed)
   onError resStream
     ( \e -> do
         env.logWarn Nothing $ "Error in read stream " <> message e
-        void $ AVar.tryPut (ErrorThrown e) resultVar
+        terminateQueue (ErrorThrown e)
     )
+  launchAff_ do -- listen for resultVar changes from upstream (i.e. from the caller of handleRequest)
+    result <- AVarAff.read resultVar
+    liftEffect $ terminateQueue result
   flip runAff_ batchConsumerLoop case _ of
     Right a -> pure unit
     Left e -> do
       let err = error $ "Error in processing " <> show e
       void $ AVar.tryPut (ErrorThrown err) resultVar
+      void $ AVar.tryPut unit batchConsumerLoopTerminated
   where
     enqueueBatch :: Foreign -> Effect Unit
-    enqueueBatch batch = void $ AVar.put batch batchQueue (\_ -> pure unit)
+    enqueueBatch batch = void $ AVar.put (Batch batch) batchQueue mempty
+
+    terminateQueue :: StreamReturn -> Effect Unit
+    terminateQueue returnValue = void $ AVar.put (EndOfStream returnValue) batchQueue mempty
 
     batchConsumerLoop :: Aff Unit
     batchConsumerLoop = do
-      batch <- AVarAff.take batchQueue
-      _ <- handleBatch batch
-      batchConsumerLoop
+      queueHead <- AVarAff.read batchQueue -- we `read` instead of `take` so that the EndOfStream can stay in the queue
+      case queueHead of
+        EndOfStream res -> do
+          void $ AVarAff.tryPut res resultVar
+          void $ AVarAff.tryPut unit batchConsumerLoopTerminated
+        Batch batch -> do
+          _ <- AVarAff.take batchQueue
+          _ <- handleBatch batch
+          batchConsumerLoop
 
     handleBatch batchJson = do
       let parseFn = JSON.read ∷ Foreign -> E SubscriptionEventStreamBatch

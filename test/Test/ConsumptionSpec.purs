@@ -70,7 +70,7 @@ startMockNakadi = do
   where
     app state = do
       let
-        eventsToSend = 50
+        eventsToSend = 100
         likeliHoodOfPause = 0.2
       post "/subscriptions/46d0fc8c-fece-4b1d-9038-80e9b3b6a797/events" do
         setStatus 200
@@ -141,7 +141,7 @@ spec =
               LT -> fail ("received batch " <> show eventCounter <> " before processing " <> show expectedCounterValue)
               EQ -> pure unit -- Console.log "id is sequential."
               GT -> fail "received a batch that was processed already!"
-            pause <- (\x -> Milliseconds (50.0 * x)) <$> liftEffect random
+            pause <- (\x -> Milliseconds (100.0 * x)) <$> liftEffect random
             delay pause
             liftEffect $ Ref.modify_ (_ + 1) clientCounter
         res <- run $ streamSubscriptionEvents
@@ -149,8 +149,7 @@ spec =
           (SubscriptionId "46d0fc8c-fece-4b1d-9038-80e9b3b6a797")
           (Minimal.streamParameters 20 40)
           handler
-        shouldEqual 50 =<< do
-          delay (5000.0 # Milliseconds)
+        shouldEqual 100 =<< do
           liftEffect $ Ref.read clientCounter
 
 extractCounterFromEvent :: Event -> Aff Int

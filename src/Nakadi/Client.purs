@@ -278,13 +278,21 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
     go = do
         resultVar <- liftAff AVar.empty
         batchQueue <- liftAff AVar.empty
+        batchConsumerLoopTerminated <- liftAff AVar.empty
         let postArgs = { resultVar
                        , buffer
                        , bufsize
                        , batchQueue
+                       , batchConsumerLoopTerminated
                        }
+        -- `listen` is an `Effect` that will return immediately (it just sets up the event handlers)
+        -- We use the AVar `resultVar` to signal termination of the Nakadi consumption.
+        -- Even once `resultVar`` is populated we can still have a running batch handler or batches
+        -- queued in `batchQueue`, so `batchConsumerLoopTerminated` is an additional signal that we wait for before returning.
         liftEffect $ listen postArgs
-        liftAff $ AVar.take resultVar
+        res <- liftAff $ AVar.read resultVar
+        liftAff $ AVar.read batchConsumerLoopTerminated
+        pure res
 
     retryPolicy ∷ RetryPolicyM m
     retryPolicy = capDelay (3.0 # Minutes) $ fullJitterBackoff (200.0 # Milliseconds)
