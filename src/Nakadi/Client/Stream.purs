@@ -138,7 +138,7 @@ handleRequest { resultVar, buffer, bufsize, batchQueue, batchConsumerLoopTermina
   -- 2. an AVar is used as a queue since the docs mention that on multiple puts it will behave like a FIFO sequence
   -- 3. the queue should not grow too big as it's limited by the configuration of the Nakadi consumer
   --    (you will only receive more batches once you commit the cursors)
-  callback <- splitAtNewline buffer bufsize enqueueBatch
+  callback <- splitAtNewline buffer bufsize handleWorkerError enqueueBatch
   onData resStream callback
   onEnd resStream (terminateQueue StreamClosed)
   onError resStream
@@ -161,6 +161,11 @@ handleRequest { resultVar, buffer, bufsize, batchQueue, batchConsumerLoopTermina
 
     terminateQueue :: StreamReturn -> Effect Unit
     terminateQueue returnValue = void $ AVar.put (EndOfStream returnValue) batchQueue mempty
+
+    handleWorkerError :: Error -> Effect Unit
+    handleWorkerError e = do
+        env.logWarn Nothing $ "Error in processing Nakadi response JSON lines: " <> message e
+        terminateQueue (ErrorThrown e)
 
     batchConsumerLoop :: Aff Unit
     batchConsumerLoop = do
