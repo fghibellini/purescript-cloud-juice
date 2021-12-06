@@ -44,7 +44,7 @@ import Node.Encoding (Encoding(..))
 import Node.HTTP.Client (Request)
 import Node.HTTP.Client as HTTP
 import Node.Stream as Stream
-import Node.Stream.Util (BufferSize, agent, allocUnsafe, newHttpKeepAliveAgent, newHttpsKeepAliveAgent)
+import Node.Stream.Util (BufferSize, agent, newHttpKeepAliveAgent, newHttpsKeepAliveAgent)
 import Simple.JSON (writeJSON)
 
 getEventTypes
@@ -236,7 +236,6 @@ streamSubscriptionEvents
   -> m StreamReturn
 streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eventHandler = do
   env    <- ask
-  buffer <- liftEffect $ allocUnsafe bufsize
 
   let
     listen postArgs = do
@@ -280,7 +279,6 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
         batchQueue <- liftAff AVar.empty
         batchConsumerLoopTerminated <- liftAff AVar.empty
         let postArgs = { resultVar
-                       , buffer
                        , bufsize
                        , batchQueue
                        , batchConsumerLoopTerminated

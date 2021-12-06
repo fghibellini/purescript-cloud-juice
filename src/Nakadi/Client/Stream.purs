@@ -32,12 +32,11 @@ import Nakadi.Client.Internal (jsonErr, unhandled)
 import Nakadi.Client.Types (NakadiResponse, Env)
 import Nakadi.Errors (E400, E401, E403, E404, E409, E422, e400, e401, e403, e404, e409)
 import Nakadi.Types (Event, StreamParameters, SubscriptionCursor, SubscriptionId, XNakadiStreamId(..), SubscriptionEventStreamBatch)
-import Node.Buffer (Buffer)
 import Node.Encoding (Encoding(..))
 import Node.HTTP.Client as HTTP
 import Node.Stream (Read, Stream, onData, onDataString, onEnd, onError, pipe)
 import Node.Stream as Stream
-import Node.Stream.Util (BufferSize, splitAtNewline)
+import Node.Stream.Util (BufferSize, allocUnsafe, splitAtNewline)
 import Simple.JSON (E, readJSON)
 import Simple.JSON as JSON
 
@@ -72,7 +71,6 @@ data BatchQueueItem = Batch Foreign | EndOfStream StreamReturn
 postStream
   ∷ ∀ r
   . { resultVar ∷ AVar StreamReturn
-    , buffer ∷ Buffer
     , bufsize ∷ BufferSize
     , batchQueue :: AVar BatchQueueItem
     , batchConsumerLoopTerminated :: AVar Unit
@@ -84,7 +82,7 @@ postStream
   -> Env r
   -> HTTP.Response
   -> Effect Unit
-postStream { resultVar, buffer, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams commitCursors subscriptionId eventHandler env response = do
+postStream { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams commitCursors subscriptionId eventHandler env response = do
   let _ = HTTP.statusMessage response
   let isGzipped = getHeader "Content-Encoding" response <#> String.contains (String.Pattern "gzip") # fromMaybe false
   let baseStream = HTTP.responseAsStream response
@@ -105,7 +103,7 @@ postStream { resultVar, buffer, bufsize, batchQueue, batchConsumerLoopTerminated
       -- Positive response, so we reset the backoff
       xStreamId <- XNakadiStreamId <$> getHeaderOrThrow "X-Nakadi-StreamId" response
       let commit = mkCommit xStreamId
-      handleRequest { resultVar, buffer, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams stream commit eventHandler env
+      handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams stream commit eventHandler env
   where
     mkCommit xStreamId cursors =
       if cursors == mempty then do pure (Right unit)
@@ -121,7 +119,6 @@ handlePutAVarError = case _ of
 handleRequest
   ∷ ∀ env r
   . { resultVar ∷ AVar StreamReturn
-    , buffer ∷ Buffer
     , bufsize ∷ BufferSize
     , batchQueue :: AVar BatchQueueItem
     , batchConsumerLoopTerminated :: AVar Unit
@@ -132,12 +129,13 @@ handleRequest
   -> EventHandler
   -> Env env
   -> Effect Unit
-handleRequest { resultVar, buffer, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams resStream commit eventHandler env = do
+handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams resStream commit eventHandler env = do
   -- 1. the JSON batches are collected in a queue and processed by a loop
   --    of Aff operations
   -- 2. an AVar is used as a queue since the docs mention that on multiple puts it will behave like a FIFO sequence
   -- 3. the queue should not grow too big as it's limited by the configuration of the Nakadi consumer
   --    (you will only receive more batches once you commit the cursors)
+  buffer <- liftEffect $ allocUnsafe bufsize
   callback <- splitAtNewline buffer bufsize handleWorkerError enqueueBatch
   onData resStream callback
   onEnd resStream (terminateQueue StreamClosed)
