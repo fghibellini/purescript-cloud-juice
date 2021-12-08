@@ -27,8 +27,10 @@ splitAtNewline b (BufferSize bs) = runFn4 splitAtNewlineImpl b bs
 
 foreign import data Agent ∷ Type
 
-foreign import newHttpsKeepAliveAgent ∷ Effect Agent
-foreign import newHttpKeepAliveAgent ∷ Effect Agent
+foreign import newHttpsAgent ∷ Effect Agent
+foreign import newHttpAgent ∷ Effect Agent
+
+foreign import destroyAgent ∷ Agent -> Effect Unit
 
 -- | The agent to use
 agent ∷ Option RequestOptions Agent

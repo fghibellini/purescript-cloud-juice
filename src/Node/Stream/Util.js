@@ -9,7 +9,7 @@ exports.allocUnsafeImpl = function(bufsize) {
 
 exports.splitAtNewlineImpl = function(buffer, bufsize, errCallback, batchCallback) {
     return function () {
-        var failed = false; // once an error is encountered no more batches are processed
+        var failed = false; // once an error is encountered no more chunks are processed
         var pos = 0;
         return function (chunk) {
             return function() {
@@ -17,7 +17,7 @@ exports.splitAtNewlineImpl = function(buffer, bufsize, errCallback, batchCallbac
                     return; // do nothing
                 } else if(chunk.length + pos > bufsize) {
                     failed = true;
-                    errCallback(new Error("Exceeded maximum buffer size of " + bufsize / 1024 / 1024 + " MiB"))
+                    errCallback(new Error("Exceeded maximum buffer size of " + bufsize / 1024 / 1024 + " MiB"))()
                 } else {
                     for (var i = 0; i < chunk.length; i++) {
                         if (chunk[i] == 10) { // newline
@@ -27,7 +27,7 @@ exports.splitAtNewlineImpl = function(buffer, bufsize, errCallback, batchCallbac
                                 parsed = JSON.parse(toPush)
                             } catch(err) {
                                 failed = true;
-                                return errCallback(new Error(`Got error: ${err.message} while trying to parse line from Nakadi: ${toPush}`))
+                                return errCallback(new Error(`Got error: ${err.message} while trying to parse line from Nakadi: ${toPush}`))()
                             }
                             pos = 0;
                             batchCallback(parsed)();
@@ -42,8 +42,26 @@ exports.splitAtNewlineImpl = function(buffer, bufsize, errCallback, batchCallbac
     }
 }
 
-exports.newHttpsKeepAliveAgent =
-  function() { return new require('https').Agent({ keepAlive: true }) };
+exports.newHttpsAgent = function() {
+    return new require('https').Agent({
+        // this is the `keepAlive` configuration option of NodeJS `http.Agent`,
+        // it has nothing to do with the HTTP KeepAlive mechanisms
+        // see https://nodejs.org/api/http.html#new-agentoptions
+        keepAlive: true,
+        maxSockets: 1
+    })
+};
 
-exports.newHttpKeepAliveAgent =
-  function() { return new require('http').Agent({ keepAlive: true }) };
+exports.newHttpAgent = function() {
+    return new require('http').Agent({
+        // this is the `keepAlive` configuration option of NodeJS `http.Agent`,
+        // it has nothing to do with the HTTP KeepAlive mechanisms
+        // see https://nodejs.org/api/http.html#new-agentoptions
+        keepAlive: true,
+        maxSockets: 1
+    })
+};
+
+exports.destroyAgent = function(agent) {
+  return function() { agent.destroy(); };
+}

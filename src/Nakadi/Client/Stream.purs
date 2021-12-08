@@ -73,7 +73,7 @@ postStream
   . { resultVar ∷ AVar StreamReturn
     , bufsize ∷ BufferSize
     , batchQueue :: AVar BatchQueueItem
-    , batchConsumerLoopTerminated :: AVar Unit
+    , batchConsumerLoopTerminated :: AVar (Either Error Unit)
     }
   -> StreamParameters
   -> (SubscriptionId -> XNakadiStreamId -> Array SubscriptionCursor -> ReaderT (Env r) Aff CommitResult)
@@ -121,7 +121,7 @@ handleRequest
   . { resultVar ∷ AVar StreamReturn
     , bufsize ∷ BufferSize
     , batchQueue :: AVar BatchQueueItem
-    , batchConsumerLoopTerminated :: AVar Unit
+    , batchConsumerLoopTerminated :: AVar (Either Error Unit)
     }
   -> StreamParameters
   -> Stream (read ∷ Read | r)
@@ -152,7 +152,7 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } st
     Left e -> do
       let err = error $ "Error in processing " <> show e
       void $ AVar.tryPut (ErrorThrown err) resultVar
-      void $ AVar.tryPut unit batchConsumerLoopTerminated
+      void $ AVar.tryPut (Left err) batchConsumerLoopTerminated
   where
     enqueueBatch :: Foreign -> Effect Unit
     enqueueBatch batch = void $ AVar.put (Batch batch) batchQueue mempty
@@ -171,7 +171,7 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } st
       case queueHead of
         EndOfStream res -> do
           void $ AVarAff.tryPut res resultVar
-          void $ AVarAff.tryPut unit batchConsumerLoopTerminated
+          void $ AVarAff.tryPut (Right unit) batchConsumerLoopTerminated
         Batch batch -> do
           _ <- AVarAff.take batchQueue
           _ <- handleBatch batch
@@ -194,7 +194,7 @@ handleRequestErrors httpStatus resultVar response = do
   onEnd response
     $ runAff_ handleAffResult do
         str <- liftEffect $ Ref.read buffer
-        liftEffect <<< Console.log $ "Nakadi responded with http status " <> show httpStatus <> " response body: " <> str
+        liftEffect <<< Console.log $ "Nakadi responded with http status " <> show httpStatus <> " response body: " <> str -- TODO remove
         res <- (readJSON >>> either jsonErr pure) str
         case res of
           p@{ status: 400 } -> pure $ e400 res

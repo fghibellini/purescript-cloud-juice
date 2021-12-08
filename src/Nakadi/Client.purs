@@ -17,6 +17,7 @@ import Affjax.StatusCode (StatusCode(..))
 import Control.Alt ((<|>))
 import Control.Monad.Error.Class (class MonadError, class MonadThrow)
 import Control.Monad.Reader (class MonadAsk, ask)
+import Control.Parallel (parOneOf)
 import Data.Bifunctor (lmap)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
@@ -27,12 +28,13 @@ import Data.Time.Duration (Milliseconds(..), Minutes(..))
 import Data.Tuple (Tuple(..))
 import Data.Variant (default, on)
 import Effect (Effect)
-import Effect.Aff (Aff, message)
+import Effect.AVar (AVar)
+import Effect.AVar as AV
+import Effect.Aff (Aff, makeAff, nonCanceler, runAff_)
 import Effect.Aff.AVar as AVar
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Aff.Retry (RetryPolicyM, RetryStatus, capDelay, fullJitterBackoff, retrying)
 import Effect.Class (liftEffect)
-import Effect.Class.Console as Console
 import Effect.Exception (Error)
 import Foreign.Object as Object
 import Nakadi.Client.Internal (catchErrors, deleteRequest, deserialise, deserialiseProblem, deserialise_, formatErr, getRequest, postRequest, putRequest, readJson, request, unhandled)
@@ -44,8 +46,8 @@ import Node.Encoding (Encoding(..))
 import Node.HTTP.Client (Request)
 import Node.HTTP.Client as HTTP
 import Node.Stream as Stream
-import Node.Stream.Util (BufferSize, agent, newHttpKeepAliveAgent, newHttpsKeepAliveAgent)
-import Simple.JSON (writeJSON)
+import Node.Stream.Util (BufferSize, agent, newHttpAgent, newHttpsAgent, destroyAgent)
+import Simple.JSON (class WriteForeign, writeJSON)
 
 getEventTypes
   ∷ ∀ r m
@@ -236,9 +238,8 @@ streamSubscriptionEvents
   -> m StreamReturn
 streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eventHandler = do
   env    <- ask
-
   let
-    listen postArgs = do
+    listen postArgs@{ resultVar } = do
       token <- env.token
       let headers' =
             [ Tuple "X-Flow-ID" (unwrap env.flowId)
@@ -250,8 +251,9 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
       let headers = Object.fromFoldable headers'
       let https = String.stripPrefix (String.Pattern "https://") env.baseUrl
       let http  = String.stripPrefix (String.Pattern "http://") env.baseUrl
-      keepAliveAgent <- liftEffect $
-        if isJust http then newHttpKeepAliveAgent else newHttpsKeepAliveAgent
+      requestAgent <- liftEffect $ case http of
+          Just _ -> newHttpAgent
+          Nothing ->  newHttpsAgent
       let hostname = fromMaybe env.baseUrl (https <|> http)
       let protocol = if isJust http then "http:" else "https:"
       let options = HTTP.protocol := protocol
@@ -260,18 +262,33 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
                   <> HTTP.headers  := HTTP.RequestHeaders headers
                   <> HTTP.method   := "POST"
                   <> HTTP.path     := ("/subscriptions/" <> subId <> "/events")
-                  <> agent         := keepAliveAgent
+                  <> agent         := requestAgent
 
       let requestCallback = postStream postArgs streamParameters commitCursors sid eventHandler env
-
       req <- HTTP.request options requestCallback
       removeRequestTimeout req
-      let writable = HTTP.requestAsStream req
-      let body = writeJSON streamParameters
-      Stream.onError writable (\e -> Console.log $ "Error!!!" <> message e)
-      let endStream = Stream.end writable (pure unit)
-      _ <- Stream.writeString writable UTF8 body endStream
-      pure unit
+      runAffAndPropagateError resultVar do
+        sendBodyAndEnd req streamParameters
+      pure requestAgent
+
+    -- run an Aff asynchronously and if it terminates with an error write it to the AVar
+    runAffAndPropagateError :: forall a. AVar StreamReturn -> Aff a -> Effect Unit
+    runAffAndPropagateError avar aff =
+      flip runAff_ aff \x -> case x of
+        Left err -> void $ AV.tryPut (ErrorThrown err) avar
+        Right _ -> pure unit
+
+    sendBodyAndEnd :: forall a. WriteForeign a => Request -> a -> Aff Unit
+    sendBodyAndEnd req body = do
+      let
+        writable = HTTP.requestAsStream req
+        rawBody = writeJSON body
+      void $ parOneOf
+        [ Left <$> makeAff \cb -> Stream.onError writable (\e -> cb $ Left e) $> nonCanceler
+        , Right <$> do
+            makeAff \cb -> Stream.writeString writable UTF8 rawBody (cb $ Right unit) $> nonCanceler
+            makeAff \cb -> Stream.end writable (cb $ Right unit) $> nonCanceler
+        ]
 
     go ∷ m StreamReturn
     go = do
@@ -287,10 +304,16 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
         -- We use the AVar `resultVar` to signal termination of the Nakadi consumption.
         -- Even once `resultVar`` is populated we can still have a running batch handler or batches
         -- queued in `batchQueue`, so `batchConsumerLoopTerminated` is an additional signal that we wait for before returning.
-        liftEffect $ listen postArgs
+        requestAgent <- liftEffect $ listen postArgs
         res <- liftAff $ AVar.read resultVar
-        liftAff $ AVar.read batchConsumerLoopTerminated
-        pure res
+        consumerRes <- liftAff $ AVar.read batchConsumerLoopTerminated
+        -- without this the server takes a loooong time to terminate (which is painful in the tests) see https://nodejs.org/api/http.html#agentdestroy
+        liftEffect $ destroyAgent requestAgent
+        -- the batches are queued up, so even if the connection ends up being terminated by Nakadi
+        -- we still want to return an error if any of the queued batches throws an error
+        pure $ case consumerRes of
+          Left err -> ErrorThrown err
+          Right _ -> res
 
     retryPolicy ∷ RetryPolicyM m
     retryPolicy = capDelay (3.0 # Minutes) $ fullJitterBackoff (200.0 # Milliseconds)
