@@ -34,7 +34,8 @@ import Node.Process (stdout)
 import Node.Stream (writeString)
 import Node.Stream.Util (BufferSize(..))
 import Simple.JSON (class WriteForeign, writeImpl, writeJSON)
-import Test.Spec (Spec, describe, it, pending)
+import Test.Spec (Spec, describe, pending, pending')
+
 import Test.Spec.Assertions (fail, shouldEqual)
 
 
@@ -60,29 +61,29 @@ spec =
     let undefinedETN = undefinedET # _.name
 
     describe "/event-types" $ do
-      it "Preparation" $ do
+      pending' "Preparation" $ do
         res <- run <<< runExceptT $ do
           types <- ExceptT $ (map <<< lmap $ expand) getEventTypes
           traverse_ (ExceptT <<< deleteEventType) (types <#> _.name)
         res `shouldEqual` (Right unit)
-      it "POST" $ do
+      pending' "POST" $ do
         res <- run $ postEventType undefinedET
         res `shouldEqual` (Right unit)
-      it "GET" $ do
+      pending' "GET" $ do
         res <- run getEventTypes
         (res <#> (map _.name)) `shouldEqual` (Right [undefinedETN])
 
     describe "/event-types/{name}" $ do
-      it "GET" $ do
+      pending' "GET" $ do
         et <- run $ getEventType undefinedETN
         (et <#> _.name) `shouldEqual` (Right undefinedETN)
-      it "PUT" $ do
+      pending' "PUT" $ do
         let modified = undefinedET { owning_application = OwningApplication "other-app" }
         put <- run $ putEventType undefinedETN modified
         put `shouldEqual` (Right unit)
         get <- run $ getEventType undefinedETN
         (get <#> _.owning_application) `shouldEqual` (Right modified.owning_application)
-      it "DELETE" $ do
+      pending' "DELETE" $ do
         res <- run $ deleteEventType undefinedETN
         res `shouldEqual` (Right unit)
 
@@ -92,7 +93,7 @@ spec =
       pending "POST"
     describe "/event-types/{name}/events" $ do
       -- pending "GET" -- deprecated, let's not support it
-      it "POST" $ do
+      pending' "POST" $ do
         Console.log "Posting 10,000 events"
         let events = bigEvent #
                       writeImpl >>> UndefinedEvent >>>
@@ -156,7 +157,7 @@ spec =
       pending "PATCH"
     describe "/subscriptions/{subscription_id}/events" $ do
       pending "GET"
-      it "POST (local)" $ do
+      pending' "POST (local)" $ do
         let timeout = 10.0 # Seconds
         let minEvents = 4000
 

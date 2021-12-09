@@ -27,7 +27,9 @@ You can edit this file as you like.
     , "spec-discovery"
     , "spec-quickcheck"
     , "transformers"
+    , "uuid"
     , "variant"
+    , "express"
     ]
 , packages =
     ./packages.dhall
