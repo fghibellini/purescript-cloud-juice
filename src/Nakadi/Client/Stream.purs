@@ -98,7 +98,10 @@ postStream { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } strea
 
   let httpStatusCode = HTTP.statusCode response
   if httpStatusCode /= 200
-    then handleRequestErrors httpStatusCode resultVar stream
+    then do
+      handleRequestErrors httpStatusCode stream \streamReturn -> do
+          void $ AVar.tryPut streamReturn resultVar
+          void $ AVar.tryPut (Right unit) batchConsumerLoopTerminated
     else do
       -- Positive response, so we reset the backoff
       xStreamId <- XNakadiStreamId <$> getHeaderOrThrow "X-Nakadi-StreamId" response
@@ -148,7 +151,9 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } st
     result <- AVarAff.read resultVar
     liftEffect $ terminateQueue result
   flip runAff_ batchConsumerLoop case _ of
-    Right a -> pure unit
+    Right res -> do
+      void $ AVar.tryPut res resultVar
+      void $ AVar.tryPut (Right unit) batchConsumerLoopTerminated
     Left e -> do
       let err = error $ "Error in processing " <> show e
       void $ AVar.tryPut (ErrorThrown err) resultVar
@@ -165,18 +170,17 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } st
         env.logWarn Nothing $ "Error in processing Nakadi response JSON lines: " <> message e
         terminateQueue (ErrorThrown e)
 
-    batchConsumerLoop :: Aff Unit
+    batchConsumerLoop :: Aff StreamReturn
     batchConsumerLoop = do
       queueHead <- AVarAff.read batchQueue -- we `read` instead of `take` so that the EndOfStream can stay in the queue
       case queueHead of
-        EndOfStream res -> do
-          void $ AVarAff.tryPut res resultVar
-          void $ AVarAff.tryPut (Right unit) batchConsumerLoopTerminated
+        EndOfStream res -> pure res
         Batch batch -> do
           _ <- AVarAff.take batchQueue
           _ <- handleBatch batch
           batchConsumerLoop
 
+    -- TODO handleBatch :: Foreign -> Either StreamReturn Unit
     handleBatch batchJson = do
       let parseFn = JSON.read ∷ Foreign -> E SubscriptionEventStreamBatch
       batch <- either jsonErr pure (parseFn batchJson)
@@ -187,8 +191,8 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } st
         Right other -> pure unit
 
 
-handleRequestErrors ∷ ∀ r. Int -> AVar StreamReturn → Stream (read ∷ Read | r) -> Effect Unit
-handleRequestErrors httpStatus resultVar response = do
+handleRequestErrors ∷ ∀ r. Int -> Stream (read ∷ Read | r) -> (StreamReturn -> Effect Unit) -> Effect Unit
+handleRequestErrors httpStatus response cb = do
   buffer <- liftEffect $ Ref.new ""
   onDataString response UTF8 (\x -> Ref.modify_ (_ <> x) buffer)
   onEnd response
@@ -208,8 +212,9 @@ handleRequestErrors httpStatus resultVar response = do
     handleAffResult = case _ of
       Left e -> do
         let err = error $ "Error in processing non-200 response from Nakadi: " <> show e
-        void $ AVar.tryPut (ErrorThrown err) resultVar
-      Right err -> void $ AVar.tryPut (FailedToStream err) resultVar
+        cb $ ErrorThrown err
+      Right err -> do
+        cb $ FailedToStream err
 
 getHeader ∷ String -> HTTP.Response -> Maybe String
 getHeader headerName response = do
