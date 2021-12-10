@@ -177,18 +177,19 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } st
         EndOfStream res -> pure res
         Batch batch -> do
           _ <- AVarAff.take batchQueue
-          _ <- handleBatch batch
-          batchConsumerLoop
+          handleBatch batch >>= case _ of
+            Left res -> pure res
+            Right _ -> batchConsumerLoop
 
-    -- TODO handleBatch :: Foreign -> Either StreamReturn Unit
+    handleBatch :: Foreign -> Aff (Either StreamReturn Unit)
     handleBatch batchJson = do
       let parseFn = JSON.read ∷ Foreign -> E SubscriptionEventStreamBatch
       batch <- either jsonErr pure (parseFn batchJson)
       traverse_ eventHandler batch.events
       commitResult <- runReaderT (commit [ batch.cursor ]) env
       case commitResult of
-        Left err -> void $ liftEffect $ AVar.tryPut (FailedToCommit err) resultVar
-        Right other -> pure unit
+        Left err -> pure $ Left (FailedToCommit err)
+        Right other -> pure $ Right unit
 
 
 handleRequestErrors ∷ ∀ r. Int -> Stream (read ∷ Read | r) -> (StreamReturn -> Effect Unit) -> Effect Unit
