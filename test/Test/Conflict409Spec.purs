@@ -33,7 +33,7 @@ import Node.Stream.Util (BufferSize(..))
 import Partial.Unsafe (unsafePartial)
 import Simple.JSON (class ReadForeign, read_, writeJSON)
 import Test.Express.Curry as ExpressCurry
-import Test.Spec (Spec, describe, it, itOnly)
+import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 
 
@@ -119,7 +119,7 @@ withNakadi aff =
 spec :: Spec Unit
 spec =
   describe "Conflict response handling" $ do
-    itOnly "Should terminate upon receiving 409, and be able to resubscribe." $ do
+    it "Should terminate upon receiving 409, and be able to resubscribe." $ do
       withNakadi do
         receivedNs <- liftEffect $ Ref.new []
         let
@@ -127,14 +127,13 @@ spec =
             let event = unsafePartial $ fromJust $ head events -- the mock server always sends batches of 1 event
             eventN <- extractCounterFromEvent event
             liftEffect $ Ref.modify_ (_ <> [eventN]) receivedNs
-        -- this attempt will fail with a 409
+        -- expected sequence of steps:
+        -- 1. attempts to subscribe
+        -- 2. receives 409 (no slots available)
+        -- 3. will trigger a retry
+        -- 4. receives a batch with a single event
+        -- 5. Nakadi terminates the consumption stream
         res <- run $ streamSubscriptionEvents
-          (BufferSize $ 1024*1024)
-          (SubscriptionId "46d0fc8c-fece-4b1d-9038-80e9b3b6a797")
-          (Minimal.streamParameters 20 40)
-          handler
-        -- this attempt should succeed
-        res2 <- run $ streamSubscriptionEvents
           (BufferSize $ 1024*1024)
           (SubscriptionId "46d0fc8c-fece-4b1d-9038-80e9b3b6a797")
           (Minimal.streamParameters 20 40)
