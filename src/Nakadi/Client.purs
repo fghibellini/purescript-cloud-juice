@@ -24,7 +24,7 @@ import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.Newtype (unwrap)
 import Data.Options ((:=))
 import Data.String as String
-import Data.Time.Duration (Milliseconds(..), Minutes(..))
+import Data.Time.Duration (Milliseconds(..), Seconds(..))
 import Data.Tuple (Tuple(..))
 import Data.Variant (default, on)
 import Effect (Effect)
@@ -316,7 +316,7 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
           Right _ -> res
 
     retryPolicy ∷ RetryPolicyM m
-    retryPolicy = capDelay (3.0 # Minutes) $ fullJitterBackoff (200.0 # Milliseconds)
+    retryPolicy = capDelay (3.0 # Seconds) $ fullJitterBackoff (200.0 # Milliseconds)
     retryCheck ∷ LogWarnFn -> RetryStatus -> StreamReturn -> m Boolean
     retryCheck logWarn _ res =
       liftEffect
