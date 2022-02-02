@@ -7,6 +7,7 @@ module Nakadi.Client
  , postEvents
  , postSubscription
  , streamSubscriptionEvents
+ , streamSubscriptionEventsRetrying
  )
  where
 
@@ -290,33 +291,43 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
             makeAff \cb -> Stream.end writable (cb $ Right unit) $> nonCanceler
         ]
 
-    go ∷ m StreamReturn
-    go = do
-        resultVar <- liftAff AVar.empty
-        batchQueue <- liftAff AVar.empty
-        batchConsumerLoopTerminated <- liftAff AVar.empty
-        let postArgs = { resultVar
-                       , bufsize
-                       , batchQueue
-                       , batchConsumerLoopTerminated
-                       }
-        -- `listen` is an `Effect` that will return immediately (it just sets up the event handlers)
-        -- We use the AVar `resultVar` to signal termination of the Nakadi consumption.
-        -- Even once `resultVar`` is populated we can still have a running batch handler or batches
-        -- queued in `batchQueue`, so `batchConsumerLoopTerminated` is an additional signal that we wait for before returning.
-        requestAgent <- liftEffect $ listen postArgs
-        res <- liftAff $ AVar.read resultVar
-        consumerRes <- liftAff $ AVar.read batchConsumerLoopTerminated
-        -- without this the server takes a loooong time to terminate (which is painful in the tests) see https://nodejs.org/api/http.html#agentdestroy
-        liftEffect $ destroyAgent requestAgent
-        -- the batches are queued up, so even if the connection ends up being terminated by Nakadi
-        -- we still want to return an error if any of the queued batches throws an error
-        pure $ case consumerRes of
-          Left err -> ErrorThrown err
-          Right _ -> res
+  resultVar <- liftAff AVar.empty
+  batchQueue <- liftAff AVar.empty
+  batchConsumerLoopTerminated <- liftAff AVar.empty
+  let postArgs = { resultVar
+                  , bufsize
+                  , batchQueue
+                  , batchConsumerLoopTerminated
+                  }
+  -- `listen` is an `Effect` that will return immediately (it just sets up the event handlers)
+  -- We use the AVar `resultVar` to signal termination of the Nakadi consumption.
+  -- Even once `resultVar`` is populated we can still have a running batch handler or batches
+  -- queued in `batchQueue`, so `batchConsumerLoopTerminated` is an additional signal that we wait for before returning.
+  requestAgent <- liftEffect $ listen postArgs
+  res <- liftAff $ AVar.read resultVar
+  consumerRes <- liftAff $ AVar.read batchConsumerLoopTerminated
+  -- without this the server takes a loooong time to terminate (which is painful in the tests) see https://nodejs.org/api/http.html#agentdestroy
+  liftEffect $ destroyAgent requestAgent
+  -- the batches are queued up, so even if the connection ends up being terminated by Nakadi
+  -- we still want to return an error if any of the queued batches throws an error
+  pure $ case consumerRes of
+    Left err -> ErrorThrown err
+    Right _ -> res
 
-    retryPolicy ∷ RetryPolicyM m
-    retryPolicy = capDelay (3.0 # Seconds) $ fullJitterBackoff (200.0 # Milliseconds)
+streamSubscriptionEventsRetrying
+  ∷ ∀ r m
+   . MonadAsk (Env r) m
+  => MonadThrow Error m
+  => MonadError Error m
+  => MonadAff m
+  => BufferSize
+  -> SubscriptionId
+  -> StreamParameters
+  -> (Array Event -> Aff Unit)
+  -> m StreamReturn
+streamSubscriptionEventsRetrying bufsize sid streamParameters eventHandler = do
+  env    <- ask
+  let
     retryCheck ∷ LogWarnFn -> RetryStatus -> StreamReturn -> m Boolean
     retryCheck logWarn _ res =
       liftEffect
@@ -331,4 +342,6 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
               err
                 # on _unprocessableEntity (\(E422 p) -> logWarn (Just p) "Failed to commit cursor." $> true)
                     (default (pure true))
-  retrying retryPolicy (retryCheck env.logWarn) (const go)
+    retryPolicy ∷ RetryPolicyM m
+    retryPolicy = capDelay (3.0 # Seconds) $ fullJitterBackoff (200.0 # Milliseconds)
+  retrying retryPolicy (retryCheck env.logWarn) (\_ -> streamSubscriptionEvents bufsize sid streamParameters eventHandler)

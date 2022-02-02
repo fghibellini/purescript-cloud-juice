@@ -18,7 +18,7 @@ import Effect.Class.Console as Console
 import Effect.Random (random)
 import Effect.Ref as Ref
 import FlowId (FlowId(..))
-import Nakadi.Client (streamSubscriptionEvents)
+import Nakadi.Client (streamSubscriptionEventsRetrying)
 import Nakadi.Client.Types (Env)
 import Nakadi.Minimal as Minimal
 import Nakadi.Types (Event(DataChangeEvent), SubscriptionId(..))
@@ -145,7 +145,7 @@ spec =
             pause <- (\x -> Milliseconds (100.0 * x)) <$> liftEffect random
             delay pause
             liftEffect $ Ref.modify_ (_ + 1) clientCounter
-        res <- run $ streamSubscriptionEvents
+        res <- run $ streamSubscriptionEventsRetrying
           (BufferSize $ 1024*1024)
           (SubscriptionId "46d0fc8c-fece-4b1d-9038-80e9b3b6a797")
           (Minimal.streamParameters 20 40)

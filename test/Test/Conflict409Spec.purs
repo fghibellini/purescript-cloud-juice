@@ -21,7 +21,7 @@ import Effect.Class (liftEffect)
 import Effect.Class.Console as Console
 import Effect.Ref as Ref
 import FlowId (FlowId(..))
-import Nakadi.Client (streamSubscriptionEvents)
+import Nakadi.Client (streamSubscriptionEventsRetrying)
 import Nakadi.Client.Types (Env)
 import Nakadi.Minimal as Minimal
 import Nakadi.Types (Event(DataChangeEvent), SubscriptionId(..))
@@ -133,7 +133,7 @@ spec =
         -- 3. will trigger a retry
         -- 4. receives a batch with a single event
         -- 5. Nakadi terminates the consumption stream
-        res <- run $ streamSubscriptionEvents
+        res <- run $ streamSubscriptionEventsRetrying
           (BufferSize $ 1024*1024)
           (SubscriptionId "46d0fc8c-fece-4b1d-9038-80e9b3b6a797")
           (Minimal.streamParameters 20 40)
