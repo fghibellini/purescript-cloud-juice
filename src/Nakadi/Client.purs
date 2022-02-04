@@ -338,8 +338,8 @@ streamSubscriptionEventsRetrying bufsize sid streamParameters eventHandler = do
                 # on _conflict (\(E409 p) -> logWarn (Just p) "Failed to start streaming." $> true)
                     (default (pure true))
             ErrorThrown err -> logWarn Nothing "Exception in consumer" $> true
-            FailedToCommit err ->
-              err
+            FailedToCommit { commitError } ->
+              commitError
                 # on _unprocessableEntity (\(E422 p) -> logWarn (Just p) "Failed to commit cursor." $> true)
                     (default (pure true))
     retryPolicy ∷ RetryPolicyM m

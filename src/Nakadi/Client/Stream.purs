@@ -11,19 +11,23 @@ module Nakadi.Client.Stream
 import Prelude
 
 import Control.Monad.Reader (ReaderT, runReaderT)
+import Data.DateTime.Instant (unInstant)
 import Data.Either (Either(..), either)
 import Data.Foldable (traverse_)
+import Data.Function (on)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Newtype (unwrap, wrap)
 import Data.String as String
 import Data.Variant (Variant)
 import Effect (Effect)
 import Effect.AVar as AVar
-import Effect.Aff (Aff, Error, launchAff_, message, runAff_)
+import Effect.Aff (Aff, Error, Milliseconds, launchAff_, message, runAff_)
 import Effect.Aff.AVar (AVar)
 import Effect.Aff.AVar as AVarAff
 import Effect.Class (liftEffect)
 import Effect.Class.Console as Console
 import Effect.Exception (error, throwException)
+import Effect.Now (now)
 import Effect.Ref as Ref
 import Foreign (Foreign)
 import Foreign.Object as Object
@@ -57,7 +61,7 @@ type CommitError = Variant
 
 data StreamReturn
   = FailedToStream StreamError
-  | FailedToCommit CommitError
+  | FailedToCommit { processingTime :: Milliseconds, commitError :: CommitError }
   | ErrorThrown Error
   | StreamClosed
 
@@ -183,12 +187,16 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } st
 
     handleBatch :: Foreign -> Aff (Either StreamReturn Unit)
     handleBatch batchJson = do
+      t0 <- liftEffect now
       let parseFn = JSON.read ∷ Foreign -> E SubscriptionEventStreamBatch
       batch <- either jsonErr pure (parseFn batchJson)
       traverse_ eventHandler batch.events
       commitResult <- runReaderT (commit [ batch.cursor ]) env
       case commitResult of
-        Left err -> pure $ Left (FailedToCommit err)
+        Left err -> do
+          t1 <- liftEffect now
+          let dt = wrap $ on (-) (unwrap <<< unInstant) t1 t0
+          pure $ Left (FailedToCommit { processingTime: dt, commitError: err })
         Right other -> pure $ Right unit
 
 
