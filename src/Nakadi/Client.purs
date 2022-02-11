@@ -42,13 +42,13 @@ import Nakadi.Client.Internal (catchErrors, deleteRequest, deserialise, deserial
 import Nakadi.Client.Stream (CommitResult, StreamReturn(..), postStream)
 import Nakadi.Client.Types (Env, NakadiResponse, LogWarnFn)
 import Nakadi.Errors (E207, E400, E403, E404, E409(..), E422(..), E422Publish, _conflict, _unprocessableEntity, e207, e400, e401, e403, e404, e409, e422, e422Publish)
-import Nakadi.Types (Cursor, CursorDistanceQuery, CursorDistanceResult, Event, EventType, EventTypeName(..), Partition, StreamParameters, Subscription, SubscriptionCursor, SubscriptionId(..), XNakadiStreamId(..))
+import Nakadi.Types (Cursor, CursorDistanceQuery, CursorDistanceResult, Event, EventType, EventTypeName(..), Partition, Problem, StreamParameters, Subscription, SubscriptionCursor, SubscriptionId(..), XNakadiStreamId(..), emptyProblem)
 import Node.Encoding (Encoding(..))
 import Node.HTTP.Client (Request)
 import Node.HTTP.Client as HTTP
 import Node.Stream as Stream
 import Node.Stream.Util (BufferSize, agent, newHttpAgent, newHttpsAgent, destroyAgent)
-import Simple.JSON (class WriteForeign, writeJSON)
+import Simple.JSON (class WriteForeign, readJSON', readJSON_, writeJSON)
 
 getEventTypes
   ∷ ∀ r m
@@ -216,12 +216,19 @@ commitCursors (SubscriptionId id) (XNakadiStreamId header) items = do
   let path = "/subscriptions/" <> id <> "/cursors"
   standardRequest <- postRequest path { items }
   let req = standardRequest { headers = standardRequest.headers <> [RequestHeader "X-Nakadi-StreamId" header] }
-  res <- request req >>= deserialise_
+  res <- request req >>= deserialize
   res # catchErrors case _ of
     p @ { status: 401 } -> pure $ lmap e401 res
     p @ { status: 403 } -> pure $ lmap e403 res
     p @ { status: 422 } -> pure $ lmap e422 res
     p -> unhandled p
+  where
+    deserialize :: ∀ m . MonadThrow Error m => Either AX.Error (Response String) -> m (Either Problem Unit)
+    deserialize = case _ of
+      Right { body, status: StatusCode code } | code # between 200 299 -> pure unit
+      Right { body, status: StatusCode code } -> pure $ Left $ fromMaybe emptyProblem $ readJSON_ body
+      Left error ->
+        formatErr error
 
 
 foreign import removeRequestTimeout ∷ Request -> Effect Unit

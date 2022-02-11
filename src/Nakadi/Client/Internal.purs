@@ -95,7 +95,7 @@ deserialise = case _ of
     Left error ->
       formatErr error
 
-deserialiseProblem :: ∀ m a b. MonadThrow Error m => ReadForeign a => String -> m (Either a b)
+deserialiseProblem :: ∀ m b. MonadThrow Error m => String -> m (Either Problem b)
 deserialiseProblem = readJSON >>> either jsonErr (pure <<< Left)
 
 readJson :: ∀ m f a. MonadThrow Error m => ReadForeign a => Applicative f => String -> m (f a)

@@ -3,7 +3,7 @@ module Nakadi.Types where
 import Prelude
 
 import Control.Alt ((<|>))
-import Data.Maybe (Maybe, fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Newtype (class Newtype)
 import Data.Nullable (toMaybe)
 import FlowId (FlowId)
@@ -181,10 +181,19 @@ type Partition =
 
 type Problem =
   { type     :: Maybe String
-  , title    :: String
-  , status   :: Int
+  , title    :: Maybe String
+  , status   :: Maybe Int
   , detail   :: Maybe String
   , instance :: Maybe String
+  }
+
+emptyProblem :: Problem
+emptyProblem =
+  { type: Nothing
+  , title: Nothing
+  , status: Nothing
+  , detail: Nothing
+  , instance: Nothing
   }
 
 type ShiftedCursor =

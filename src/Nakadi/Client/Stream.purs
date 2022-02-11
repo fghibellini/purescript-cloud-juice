@@ -18,10 +18,10 @@ import Data.Function (on)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Newtype (unwrap, wrap)
 import Data.String as String
-import Data.Variant (Variant)
+import Data.Variant (SProxy(..), Variant, expand, inj)
 import Effect (Effect)
 import Effect.AVar as AVar
-import Effect.Aff (Aff, Error, Milliseconds, launchAff_, message, runAff_)
+import Effect.Aff (Aff, Error, Milliseconds(..), launchAff_, message, runAff_)
 import Effect.Aff.AVar (AVar)
 import Effect.Aff.AVar as AVarAff
 import Effect.Class (liftEffect)
@@ -57,6 +57,7 @@ type CommitError = Variant
   , forbidden ∷ E403
   , notFound ∷ E404
   , unprocessableEntity ∷ E422
+  , ajaxError :: Unit
   )
 
 data StreamReturn
@@ -67,8 +68,9 @@ data StreamReturn
 
 type EventHandler = Array Event -> Aff Unit
 
-type CommitResult =
-  NakadiResponse (forbidden ∷ E403, notFound ∷ E404, unprocessableEntity ∷ E422) Unit
+data CommitResult
+  = CommitResultAjaxError Error
+  | CommitResultNakadiResponse (NakadiResponse (forbidden ∷ E403, notFound ∷ E404, unprocessableEntity ∷ E422) Unit)
 
 data BatchQueueItem = Batch Foreign | EndOfStream StreamReturn
 
@@ -193,11 +195,15 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } st
       traverse_ eventHandler batch.events
       commitResult <- runReaderT (commit [ batch.cursor ]) env
       case commitResult of
-        Left err -> do
-          t1 <- liftEffect now
-          let dt = wrap $ on (-) (unwrap <<< unInstant) t1 t0
-          pure $ Left (FailedToCommit { processingTime: dt, commitError: err })
-        Right other -> pure $ Right unit
+        CommitResultAjaxError err -> do
+          dt <- getTimeElapsedSince t0
+          let ce = inj (SProxy :: SProxy "ajaxError") unit
+          pure $ Left (FailedToCommit { processingTime: dt, commitError: ce })
+        CommitResultNakadiResponse (Left err) -> do
+          dt <- getTimeElapsedSince t0
+          let ce = expand err
+          pure $ Left (FailedToCommit { processingTime: dt, commitError: ce })
+        CommitResultNakadiResponse (Right other) -> pure $ Right unit
 
 
 handleRequestErrors ∷ ∀ r. Int -> Stream (read ∷ Read | r) -> (StreamReturn -> Effect Unit) -> Effect Unit
@@ -236,3 +242,8 @@ getHeaderOrThrow ∷ String -> HTTP.Response -> Effect String
 getHeaderOrThrow headerName =
   maybe (throwException (error $ "Required header " <> headerName <> " is missing")) pure <<<
       getHeader headerName
+
+getTimeElapsedSince :: Instant -> Aff Milliseconds
+getTimeElapsedSince t0 = do
+  t1 <- liftEffect now
+  pure $ wrap $ on (-) (unwrap <<< unInstant) t1 t0
