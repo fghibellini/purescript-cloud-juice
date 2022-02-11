@@ -12,7 +12,7 @@ import Data.Int (round, toNumber)
 import Data.List.Lazy (toUnfoldable)
 import Data.List.Lazy as List
 import Data.List.Lazy.NonEmpty as NEL
-import Data.Maybe (fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Newtype (unwrap)
 import Data.String as String
 import Data.Time.Duration (Milliseconds(..), Seconds(..), convertDuration)
@@ -35,7 +35,6 @@ import Node.Stream (writeString)
 import Node.Stream.Util (BufferSize(..))
 import Simple.JSON (class WriteForeign, writeImpl, writeJSON)
 import Test.Spec (Spec, describe, pending, pending')
-
 import Test.Spec.Assertions (fail, shouldEqual)
 
 
@@ -67,7 +66,7 @@ spec =
           traverse_ (ExceptT <<< deleteEventType) (types <#> _.name)
         res `shouldEqual` (Right unit)
       pending' "POST" $ do
-        res <- run $ postEventType undefinedET
+        res <- run $ postEventType Nothing undefinedET
         res `shouldEqual` (Right unit)
       pending' "GET" $ do
         res <- run getEventTypes
@@ -79,7 +78,7 @@ spec =
         (et <#> _.name) `shouldEqual` (Right undefinedETN)
       pending' "PUT" $ do
         let modified = undefinedET { owning_application = OwningApplication "other-app" }
-        put <- run $ putEventType undefinedETN modified
+        put <- run $ putEventType Nothing undefinedETN modified
         put `shouldEqual` (Right unit)
         get <- run $ getEventType undefinedETN
         (get <#> _.owning_application) `shouldEqual` (Right modified.owning_application)
@@ -100,10 +99,10 @@ spec =
                       NEL.repeat >>> NEL.tail >>>
                       List.take 100 >>> toUnfoldable
         -- make sure it exists
-        _ <- run $ postEventType undefinedET
+        _ <- run $ postEventType Nothing undefinedET
         res <- sequence_ (List.take 100 $ List.repeat (
             (delay (200.0 # Milliseconds)) *>
-            (run $ postEvents undefinedETN events)
+            (run $ postEvents Nothing undefinedETN events)
           ))
         res `shouldEqual` unit
     describe "/event-types/{name}/partitions" $ do
@@ -162,7 +161,7 @@ spec =
         let minEvents = 4000
 
         let subs = Minimal.subscription (OwningApplication "cloud-juice") undefinedETN
-        sub <- run $ postSubscription subs
+        sub <- run $ postSubscription Nothing subs
         (void sub) `shouldEqual` (Right unit)
         let subId = fromMaybe (SubscriptionId "nein") (hush sub >>= _.id)
         events     <- liftEffect $ Ref.new 0

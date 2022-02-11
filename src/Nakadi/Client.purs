@@ -40,7 +40,7 @@ import Effect.Exception (Error)
 import Foreign.Object as Object
 import Nakadi.Client.Internal (catchErrors, deleteRequest, deserialise, deserialiseProblem, deserialise_, formatErr, getRequest, postRequest, putRequest, readJson, request, unhandled)
 import Nakadi.Client.Stream (CommitResult, StreamReturn(..), postStream)
-import Nakadi.Client.Types (Env, NakadiResponse, LogWarnFn)
+import Nakadi.Client.Types (Env, NakadiResponse, LogWarnFn, SpanCtx)
 import Nakadi.Errors (E207, E400, E403, E404, E409(..), E422(..), E422Publish, _conflict, _unprocessableEntity, e207, e400, e401, e403, e404, e409, e422, e422Publish)
 import Nakadi.Types (Cursor, CursorDistanceQuery, CursorDistanceResult, Event, EventType, EventTypeName(..), Partition, StreamParameters, Subscription, SubscriptionCursor, SubscriptionId(..), XNakadiStreamId(..))
 import Node.Encoding (Encoding(..))
@@ -67,10 +67,11 @@ postEventType
    . MonadAsk (Env r) m
   => MonadThrow Error m
   => MonadAff m
-  => EventType
+  => Maybe SpanCtx
+  -> EventType
   -> m (NakadiResponse (conflict ∷ E409, unprocessableEntity ∷ E422) Unit)
-postEventType eventType = do
-  res <- postRequest "/event-types" eventType >>= request >>= deserialise_
+postEventType spanCtx eventType = do
+  res <- postRequest "/event-types" spanCtx eventType >>= request >>= deserialise_
   res # catchErrors case _ of
     p @ { status: 401 } -> pure $ lmap e401 res
     p @ { status: 409 } -> pure $ lmap e409 res
@@ -96,11 +97,12 @@ putEventType
    . MonadAsk (Env r) m
   => MonadThrow Error m
   => MonadAff m
-  => EventTypeName
+  => Maybe SpanCtx
+  -> EventTypeName
   -> EventType
   -> m (NakadiResponse (forbidden ∷ E403, notFound ∷ E404, unprocessableEntity ∷ E422) Unit)
-putEventType (EventTypeName name) eventType = do
-  res <- putRequest ("/event-types/" <> name) eventType >>= request >>= deserialise_
+putEventType spanCtx (EventTypeName name) eventType = do
+  res <- putRequest ("/event-types/" <> name) spanCtx eventType >>= request >>= deserialise_
   res # catchErrors case _ of
     p @ { status: 401 } -> pure $ lmap e401 res
     p @ { status: 403 } -> pure $ lmap e403 res
@@ -128,12 +130,13 @@ getCursorDistances
    . MonadAsk (Env r) m
   => MonadThrow Error m
   => MonadAff m
-  => EventTypeName
+  => Maybe SpanCtx
+  -> EventTypeName
   -> (Array CursorDistanceQuery)
   -> m (NakadiResponse (forbidden ∷ E403, notFound ∷ E404, unprocessableEntity ∷ E422) (Array CursorDistanceResult))
-getCursorDistances (EventTypeName name) queries = do
+getCursorDistances spanCtx (EventTypeName name) queries = do
   let path = "/event-types/" <> name <> "/cursor-distances"
-  res <- postRequest path queries >>= request >>= deserialise
+  res <- postRequest path spanCtx queries >>= request >>= deserialise
   res # catchErrors case _ of
     p @ { status: 401 } -> pure $ lmap e401 res
     p @ { status: 403 } -> pure $ lmap e403 res
@@ -145,12 +148,13 @@ getCursorLag
    . MonadAsk (Env r) m
   => MonadThrow Error m
   => MonadAff m
-  => EventTypeName
+  => Maybe SpanCtx
+  -> EventTypeName
   -> (Array Cursor)
   -> m (NakadiResponse (forbidden ∷ E403, notFound ∷ E404, unprocessableEntity ∷ E422) (Array Partition))
-getCursorLag (EventTypeName name) cursors = do
+getCursorLag spanCtx (EventTypeName name) cursors = do
   let path = "/event-types/" <> name <> "/cursors-lag"
-  res <- postRequest path cursors >>= request >>= deserialise
+  res <- postRequest path spanCtx cursors >>= request >>= deserialise
   res # catchErrors case _ of
     p @ { status: 401 } -> pure $ lmap e401 res
     p @ { status: 403 } -> pure $ lmap e403 res
@@ -162,12 +166,13 @@ postEvents
    . MonadAsk (Env r) m
   => MonadThrow Error m
   => MonadAff m
-  => EventTypeName
+  => Maybe SpanCtx
+  -> EventTypeName
   -> (Array Event)
   -> m (NakadiResponse (multiStatus ∷ E207, forbidden ∷ E403, notFound ∷ E404, unprocessableEntityPublish ∷ E422Publish) Unit)
-postEvents (EventTypeName name) events = do
+postEvents spanCtx (EventTypeName name) events = do
   let path = "/event-types/" <> name <> "/events"
-  response <- postRequest path events >>= request
+  response <- postRequest path spanCtx events >>= request
   case response of
     Right { body, status: StatusCode statusCode } -> do
       res1 <- case statusCode of
@@ -192,11 +197,12 @@ postSubscription
    . MonadAsk (Env r) m
   => MonadThrow Error m
   => MonadAff m
-  => Subscription
+  => Maybe SpanCtx
+  -> Subscription
   -> m (NakadiResponse (badRequest ∷ E400, unprocessableEntity ∷ E422) Subscription)
-postSubscription subscription = do
+postSubscription spanCtx subscription = do
   let path = "/subscriptions"
-  res <- postRequest path subscription >>= request >>= deserialise
+  res <- postRequest path spanCtx subscription >>= request >>= deserialise
   res # catchErrors case _ of
     p @ { status: 400 } -> pure $ lmap e400 res
     p @ { status: 401 } -> pure $ lmap e401 res
@@ -214,7 +220,8 @@ commitCursors
   -> m CommitResult
 commitCursors (SubscriptionId id) (XNakadiStreamId header) items = do
   let path = "/subscriptions/" <> id <> "/cursors"
-  standardRequest <- postRequest path { items }
+  let spanCtx = Nothing
+  standardRequest <- postRequest path spanCtx { items }
   let req = standardRequest { headers = standardRequest.headers <> [RequestHeader "X-Nakadi-StreamId" header] }
   res <- request req >>= deserialise_
   res # catchErrors case _ of

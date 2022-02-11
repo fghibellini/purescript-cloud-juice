@@ -1,7 +1,8 @@
 module Nakadi.Client.Types
   ( Env
-  , NakadiResponse
   , LogWarnFn
+  , NakadiResponse
+  , SpanCtx(..)
   )
   where
 
@@ -9,6 +10,7 @@ import Prelude
 
 import Data.Either (Either)
 import Data.Maybe (Maybe)
+import Data.Newtype (class Newtype)
 import Data.Variant (Variant)
 import Effect (Effect)
 import FlowId (FlowId)
@@ -27,3 +29,7 @@ type Env r =
   }
 
 type NakadiResponse r a = Either (Variant (unauthorized :: E401 | r)) a
+
+newtype SpanCtx = SpanCtx String
+
+derive instance newtypeSpanCtx :: Newtype SpanCtx _

@@ -10,6 +10,7 @@ import Affjax.ResponseFormat as ResponseFormat
 import Affjax.StatusCode (StatusCode(..))
 import Control.Monad.Error.Class (class MonadThrow, throwError)
 import Control.Monad.Reader (class MonadAsk, ask)
+import Data.Array (concat, fromFoldable)
 import Data.Either (Either(..), either)
 import Data.Foldable (class Foldable, foldMap)
 import Data.HTTP.Method (Method(..))
@@ -20,7 +21,7 @@ import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
 import Effect.Exception (Error, error)
 import Foreign (ForeignError, renderForeignError)
-import Nakadi.Client.Types (Env)
+import Nakadi.Client.Types (Env, SpanCtx(..))
 import Nakadi.Types (Problem)
 import Simple.JSON (class ReadForeign, class WriteForeign, readJSON, writeJSON)
 
@@ -54,21 +55,25 @@ getRequest = baseRequest GET
 deleteRequest :: ∀ r m. MonadAsk (Env r) m => MonadAff m => String -> m (Request String)
 deleteRequest = baseRequest DELETE
 
-writeRequest :: ∀ a m r. WriteForeign a => MonadAsk (Env r) m => MonadAff m => Method -> String -> a -> m (Request String)
-writeRequest method path content = do
+writeRequest :: ∀ a m r. WriteForeign a => MonadAsk (Env r) m => MonadAff m => Method -> String -> Maybe SpanCtx -> a -> m (Request String)
+writeRequest method path spanCtx content = do
   req <- baseRequest method path
   let contentString = writeJSON content -- # spy "Body to send"
   let body = Just (RequestBody.string contentString)
-  let headers = req.headers <> [RequestHeader "Content-Type" "application/json"]
+  let headers = concat
+        [ req.headers
+        , [ RequestHeader "Content-Type" "application/json" ]
+        , fromFoldable $ map (\(SpanCtx x) -> RequestHeader "span_ctx" x) $ spanCtx
+        ]
   pure $ req
     { content = body
     , headers = headers
     }
 
-postRequest :: ∀ a m r . WriteForeign a => MonadAsk (Env r) m => MonadAff m => String -> a -> m (Request String)
+postRequest :: ∀ a m r . WriteForeign a => MonadAsk (Env r) m => MonadAff m => String -> Maybe SpanCtx -> a -> m (Request String)
 postRequest = writeRequest POST
 
-putRequest :: ∀ a m r . WriteForeign a => MonadAsk (Env r) m => MonadAff m => String -> a -> m (Request String)
+putRequest :: ∀ a m r . WriteForeign a => MonadAsk (Env r) m => MonadAff m => String -> Maybe SpanCtx -> a -> m (Request String)
 putRequest = writeRequest PUT
 
 formatErr :: ∀ m a. MonadThrow Error m => AX.Error -> m a
