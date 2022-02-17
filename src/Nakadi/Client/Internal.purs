@@ -63,7 +63,7 @@ writeRequest method path spanCtx content = do
   let headers = concat
         [ req.headers
         , [ RequestHeader "Content-Type" "application/json" ]
-        , fromFoldable $ map (\(SpanCtx x) -> RequestHeader "span_ctx" x) $ spanCtx
+        , fromFoldable $ map (\(SpanCtx x) -> RequestHeader "Span_ctx" x) $ spanCtx
         ]
   pure $ req
     { content = body
