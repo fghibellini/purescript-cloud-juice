@@ -1,6 +1,7 @@
 module Nakadi.Client.Stream
   ( postStream
   , StreamReturn(..)
+  , StreamResult(..)
   , StreamError
   , CommitError
   , CommitResult
@@ -11,6 +12,7 @@ module Nakadi.Client.Stream
 import Prelude
 
 import Control.Monad.Reader (ReaderT, runReaderT)
+import Data.Array (length)
 import Data.DateTime.Instant (unInstant)
 import Data.Either (Either(..), either)
 import Data.Foldable (traverse_)
@@ -35,7 +37,7 @@ import Gzip.Gzip as Gzip
 import Nakadi.Client.Internal (jsonErr, unhandled)
 import Nakadi.Client.Types (NakadiResponse, Env)
 import Nakadi.Errors (E400, E401, E403, E404, E409, E422, e400, e401, e403, e404, e409)
-import Nakadi.Types (Event, StreamParameters, SubscriptionCursor, SubscriptionId, XNakadiStreamId(..), SubscriptionEventStreamBatch)
+import Nakadi.Types (Event, StreamParameters, SubscriptionCursor, SubscriptionEventStreamBatch, SubscriptionId, XNakadiStreamId(..), SubscriptionStats)
 import Node.Encoding (Encoding(..))
 import Node.HTTP.Client as HTTP
 import Node.Stream (Read, Stream, onData, onDataString, onEnd, onError, pipe)
@@ -59,7 +61,9 @@ type CommitError = Variant
   , unprocessableEntity ∷ E422
   )
 
-data StreamReturn
+type StreamReturn = { result :: StreamResult, stats :: SubscriptionStats }
+
+data StreamResult
   = FailedToStream StreamError
   | FailedToCommit { processingTime :: Milliseconds, commitError :: CommitError }
   | ErrorThrown Error
@@ -70,14 +74,15 @@ type EventHandler = Array Event -> Aff Unit
 type CommitResult =
   NakadiResponse (forbidden ∷ E403, notFound ∷ E404, unprocessableEntity ∷ E422) Unit
 
-data BatchQueueItem = Batch Foreign | EndOfStream StreamReturn
+data BatchQueueItem = Batch Foreign | EndOfStream StreamResult
 
 postStream
   ∷ ∀ r
-  . { resultVar ∷ AVar StreamReturn
+  . { resultVar ∷ AVar StreamResult
     , bufsize ∷ BufferSize
     , batchQueue :: AVar BatchQueueItem
     , batchConsumerLoopTerminated :: AVar (Either Error Unit)
+    , subscriptionStats :: Ref.Ref SubscriptionStats
     }
   -> StreamParameters
   -> (SubscriptionId -> XNakadiStreamId -> Array SubscriptionCursor -> ReaderT (Env r) Aff CommitResult)
@@ -86,7 +91,7 @@ postStream
   -> Env r
   -> HTTP.Response
   -> Effect Unit
-postStream { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams commitCursors subscriptionId eventHandler env response = do
+postStream postArgs@{ resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams commitCursors subscriptionId eventHandler env response = do
   let _ = HTTP.statusMessage response
   let isGzipped = getHeader "Content-Encoding" response <#> String.contains (String.Pattern "gzip") # fromMaybe false
   let baseStream = HTTP.responseAsStream response
@@ -110,7 +115,7 @@ postStream { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } strea
       -- Positive response, so we reset the backoff
       xStreamId <- XNakadiStreamId <$> getHeaderOrThrow "X-Nakadi-StreamId" response
       let commit = mkCommit xStreamId
-      handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams stream commit eventHandler env
+      handleRequest postArgs streamParams stream commit eventHandler env
   where
     mkCommit xStreamId cursors =
       if cursors == mempty then do pure (Right unit)
@@ -125,10 +130,11 @@ handlePutAVarError = case _ of
 
 handleRequest
   ∷ ∀ env r
-  . { resultVar ∷ AVar StreamReturn
+  . { resultVar ∷ AVar StreamResult
     , bufsize ∷ BufferSize
     , batchQueue :: AVar BatchQueueItem
     , batchConsumerLoopTerminated :: AVar (Either Error Unit)
+    , subscriptionStats :: Ref.Ref SubscriptionStats
     }
   -> StreamParameters
   -> Stream (read ∷ Read | r)
@@ -136,7 +142,7 @@ handleRequest
   -> EventHandler
   -> Env env
   -> Effect Unit
-handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams resStream commit eventHandler env = do
+handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated, subscriptionStats } streamParams resStream commit eventHandler env = do
   -- 1. the JSON batches are collected in a queue and processed by a loop
   --    of Aff operations
   -- 2. an AVar is used as a queue since the docs mention that on multiple puts it will behave like a FIFO sequence
@@ -164,9 +170,11 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } st
       void $ AVar.tryPut (Left err) batchConsumerLoopTerminated
   where
     enqueueBatch :: Foreign -> Effect Unit
-    enqueueBatch batch = void $ AVar.put (Batch batch) batchQueue mempty
+    enqueueBatch batch = do
+      _ <- Ref.modify (\stats -> stats { receivedBatchCount = stats.receivedBatchCount + 1 }) subscriptionStats
+      void $ AVar.put (Batch batch) batchQueue mempty
 
-    terminateQueue :: StreamReturn -> Effect Unit
+    terminateQueue :: StreamResult -> Effect Unit
     terminateQueue returnValue = void $ AVar.put (EndOfStream returnValue) batchQueue mempty
 
     handleWorkerError :: Error -> Effect Unit
@@ -174,7 +182,7 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } st
         env.logWarn Nothing $ "Error in processing Nakadi response JSON lines: " <> message e
         terminateQueue (ErrorThrown e)
 
-    batchConsumerLoop :: Aff StreamReturn
+    batchConsumerLoop :: Aff StreamResult
     batchConsumerLoop = do
       queueHead <- AVarAff.read batchQueue -- we `read` instead of `take` so that the EndOfStream can stay in the queue
       case queueHead of
@@ -185,7 +193,7 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } st
             Left res -> pure res
             Right _ -> batchConsumerLoop
 
-    handleBatch :: Foreign -> Aff (Either StreamReturn Unit)
+    handleBatch :: Foreign -> Aff (Either StreamResult Unit)
     handleBatch batchJson = do
       t0 <- liftEffect now
       let parseFn = JSON.read ∷ Foreign -> E SubscriptionEventStreamBatch
@@ -197,10 +205,17 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } st
           t1 <- liftEffect now
           let dt = wrap $ on (-) (unwrap <<< unInstant) t1 t0
           pure $ Left (FailedToCommit { processingTime: dt, commitError: err })
-        Right other -> pure $ Right unit
+        Right other -> do
+          commitTime <- liftEffect now
+          _ <- liftEffect $ Ref.modify (\stats -> stats
+            { committedBatchCount = stats.committedBatchCount + 1
+            , committedEventCount = stats.committedEventCount + maybe 0 length batch.events
+            , lastCommitTime = Nothing -- TODO
+            }) subscriptionStats
+          pure $ Right unit
 
 
-handleRequestErrors ∷ ∀ r. Int -> Stream (read ∷ Read | r) -> (StreamReturn -> Effect Unit) -> Effect Unit
+handleRequestErrors ∷ ∀ r. Int -> Stream (read ∷ Read | r) -> (StreamResult -> Effect Unit) -> Effect Unit
 handleRequestErrors httpStatus response cb = do
   buffer <- liftEffect $ Ref.new ""
   onDataString response UTF8 (\x -> Ref.modify_ (_ <> x) buffer)

@@ -3,7 +3,8 @@ module Nakadi.Types where
 import Prelude
 
 import Control.Alt ((<|>))
-import Data.Maybe (Maybe, fromMaybe)
+import Data.JSDate (JSDate)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Newtype (class Newtype)
 import Data.Nullable (toMaybe)
 import FlowId (FlowId)
@@ -332,3 +333,20 @@ derive newtype instance ordXNakadiStreamId :: Ord XNakadiStreamId
 derive newtype instance showXNakadiStreamId :: Show XNakadiStreamId
 derive newtype instance readForeignXNakadiStreamId :: ReadForeign XNakadiStreamId
 derive newtype instance writeForeignXNakadiStreamId :: WriteForeign XNakadiStreamId
+
+type SubscriptionStats =
+  { subscriptionStartTime :: JSDate
+  , lastCommitTime :: Maybe JSDate
+  , receivedBatchCount :: Int
+  , committedBatchCount :: Int
+  , committedEventCount :: Int
+  }
+
+emptySubscriptionStats :: JSDate -> SubscriptionStats
+emptySubscriptionStats t0 =
+  { subscriptionStartTime: t0
+  , lastCommitTime: Nothing
+  , receivedBatchCount: 0
+  , committedBatchCount: 0
+  , committedEventCount: 0
+  }

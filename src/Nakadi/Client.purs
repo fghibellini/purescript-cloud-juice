@@ -21,6 +21,8 @@ import Control.Monad.Reader (class MonadAsk, ask)
 import Control.Parallel (parOneOf)
 import Data.Bifunctor (lmap)
 import Data.Either (Either(..))
+import Data.JSDate (now)
+
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.Newtype (unwrap)
 import Data.Options ((:=))
@@ -37,12 +39,13 @@ import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Aff.Retry (RetryPolicyM, RetryStatus, capDelay, fullJitterBackoff, retrying)
 import Effect.Class (liftEffect)
 import Effect.Exception (Error)
+import Effect.Ref as Ref
 import Foreign.Object as Object
 import Nakadi.Client.Internal (catchErrors, deleteRequest, deserialise, deserialiseProblem, deserialise_, formatErr, getRequest, postRequest, putRequest, readJson, request, unhandled)
-import Nakadi.Client.Stream (CommitResult, StreamReturn(..), postStream)
+import Nakadi.Client.Stream (CommitResult, StreamResult(..), StreamReturn, postStream)
 import Nakadi.Client.Types (Env, NakadiResponse, LogWarnFn, SpanCtx)
 import Nakadi.Errors (E207, E400, E403, E404, E409(..), E422(..), E422Publish, _conflict, _unprocessableEntity, e207, e400, e401, e403, e404, e409, e422, e422Publish)
-import Nakadi.Types (Cursor, CursorDistanceQuery, CursorDistanceResult, Event, EventType, EventTypeName(..), Partition, StreamParameters, Subscription, SubscriptionCursor, SubscriptionId(..), XNakadiStreamId(..))
+import Nakadi.Types (Cursor, CursorDistanceQuery, CursorDistanceResult, Event, EventType, EventTypeName(..), Partition, StreamParameters, Subscription, SubscriptionCursor, SubscriptionId(..), XNakadiStreamId(..), emptySubscriptionStats)
 import Node.Encoding (Encoding(..))
 import Node.HTTP.Client (Request)
 import Node.HTTP.Client as HTTP
@@ -246,6 +249,8 @@ streamSubscriptionEvents
   -> m StreamReturn
 streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eventHandler = do
   env    <- ask
+  subscriptionTime <- liftEffect now
+  subscriptionStats <- liftEffect $ Ref.new (emptySubscriptionStats subscriptionTime)
   let
     listen postArgs@{ resultVar } = do
       token <- env.token
@@ -280,7 +285,7 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
       pure requestAgent
 
     -- run an Aff asynchronously and if it terminates with an error write it to the AVar
-    runAffAndPropagateError :: forall a. AVar StreamReturn -> Aff a -> Effect Unit
+    runAffAndPropagateError :: forall a. AVar StreamResult -> Aff a -> Effect Unit
     runAffAndPropagateError avar aff =
       flip runAff_ aff \x -> case x of
         Left err -> void $ AV.tryPut (ErrorThrown err) avar
@@ -305,6 +310,7 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
                   , bufsize
                   , batchQueue
                   , batchConsumerLoopTerminated
+                  , subscriptionStats
                   }
   -- `listen` is an `Effect` that will return immediately (it just sets up the event handlers)
   -- We use the AVar `resultVar` to signal termination of the Nakadi consumption.
@@ -317,7 +323,8 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
   liftEffect $ destroyAgent requestAgent
   -- the batches are queued up, so even if the connection ends up being terminated by Nakadi
   -- we still want to return an error if any of the queued batches throws an error
-  pure $ case consumerRes of
+  stats <- liftEffect $ Ref.read subscriptionStats
+  pure $ { stats, result: _ } $ case consumerRes of
     Left err -> ErrorThrown err
     Right _ -> res
 
@@ -338,7 +345,7 @@ streamSubscriptionEventsRetrying bufsize sid streamParameters eventHandler = do
     retryCheck ∷ LogWarnFn -> RetryStatus -> StreamReturn -> m Boolean
     retryCheck logWarn _ res =
       liftEffect
-        $ case res of
+        $ case res.result of
             StreamClosed -> logWarn Nothing "Stream closed by Nakadi" $> false
             FailedToStream err ->
               err
