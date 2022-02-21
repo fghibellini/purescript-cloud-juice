@@ -22,14 +22,13 @@ import Control.Parallel (parOneOf)
 import Data.Bifunctor (lmap)
 import Data.Either (Either(..))
 import Data.JSDate (now)
-
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.Newtype (unwrap)
 import Data.Options ((:=))
 import Data.String as String
 import Data.Time.Duration (Milliseconds(..), Seconds(..))
 import Data.Tuple (Tuple(..))
-import Data.Variant (default, on)
+import Data.Variant (default, match, on)
 import Effect (Effect)
 import Effect.AVar (AVar)
 import Effect.AVar as AV
@@ -41,17 +40,17 @@ import Effect.Class (liftEffect)
 import Effect.Exception (Error)
 import Effect.Ref as Ref
 import Foreign.Object as Object
-import Nakadi.Client.Internal (catchErrors, deleteRequest, deserialise, deserialiseProblem, deserialise_, formatErr, getRequest, postRequest, putRequest, readJson, request, unhandled)
+import Nakadi.Client.Internal (deleteRequest, deserialise, deserialiseProblem, deserialise_, getRequest, postRequest, putRequest, request)
 import Nakadi.Client.Stream (CommitResult, StreamResult(..), StreamReturn, postStream)
 import Nakadi.Client.Types (Env, NakadiResponse, LogWarnFn, SpanCtx)
-import Nakadi.Errors (E207, E400, E403, E404, E409(..), E422(..), E422Publish, _conflict, _unprocessableEntity, e207, e400, e401, e403, e404, e409, e422, e422Publish)
-import Nakadi.Types (Cursor, CursorDistanceQuery, CursorDistanceResult, Event, EventType, EventTypeName(..), Partition, StreamParameters, Subscription, SubscriptionCursor, SubscriptionId(..), XNakadiStreamId(..), emptySubscriptionStats)
+import Nakadi.Errors (E207, E400, E403, E404, E409(..), E422(..), E422Publish, _conflict, _unprocessableEntity, e207, e401, e403, e404, e409, e422, e422Publish, eAjaxError, eUnexpected)
+import Nakadi.Types (Cursor, CursorDistanceQuery, CursorDistanceResult, Event, EventType, EventTypeName(..), Partition, Problem(..), StreamParameters, Subscription, SubscriptionCursor, SubscriptionId(..), XNakadiStreamId(..), emptySubscriptionStats, problemStatus)
 import Node.Encoding (Encoding(..))
 import Node.HTTP.Client (Request)
 import Node.HTTP.Client as HTTP
 import Node.Stream as Stream
 import Node.Stream.Util (BufferSize, agent, newHttpAgent, newHttpsAgent, destroyAgent)
-import Simple.JSON (class WriteForeign, writeJSON)
+import Simple.JSON (class WriteForeign, readJSON, writeJSON)
 
 getEventTypes
   ∷ ∀ r m
@@ -61,9 +60,16 @@ getEventTypes
   => m (NakadiResponse () (Array EventType))
 getEventTypes = do
   res <- getRequest "/event-types" >>= request >>= deserialise
-  res # catchErrors case _ of
-    p @ { status: 401 } -> pure $ lmap e401 res
-    p -> unhandled p
+  pure $ lmap mapErrorVariant res
+  where
+    mapErrorVariant = match
+      { ajaxError: \err -> eAjaxError err
+      , non200: \p ->
+        let statusCode = problemStatus p
+        in case statusCode of
+          401 -> e401 p
+          _ -> eUnexpected p
+      }
 
 postEventType
   ∷ ∀ r m
@@ -74,12 +80,19 @@ postEventType
   -> EventType
   -> m (NakadiResponse (conflict ∷ E409, unprocessableEntity ∷ E422) Unit)
 postEventType spanCtx eventType = do
-  res <- postRequest "/event-types" spanCtx eventType >>= request >>= deserialise_
-  res # catchErrors case _ of
-    p @ { status: 401 } -> pure $ lmap e401 res
-    p @ { status: 409 } -> pure $ lmap e409 res
-    p @ { status: 422 } -> pure $ lmap e422 res
-    p -> unhandled p
+  res <- deserialise_ <$> (postRequest "/event-types" spanCtx eventType >>= request)
+  pure $ lmap mapErrorVariant res
+  where
+    mapErrorVariant = match
+      { ajaxError: \err -> eAjaxError err
+      , non200: \p ->
+        let statusCode = problemStatus p
+        in case statusCode of
+          401 -> e401 p
+          409 -> e409 p
+          422 -> e422 p
+          _ -> eUnexpected p
+      }
 
 getEventType
   ∷ ∀ r m
@@ -90,10 +103,18 @@ getEventType
   -> m (NakadiResponse (notFound ∷ E404) EventType)
 getEventType (EventTypeName name) = do
   res <- getRequest ("/event-types/" <> name) >>= request >>= deserialise
-  res # catchErrors case _ of
-    p @ { status: 401 } -> pure $ lmap e401 res
-    p @ { status: 404 } -> pure $ lmap e404 res
-    p -> unhandled p
+  pure $ lmap mapErrorVariant res
+  where
+    mapErrorVariant = match
+      { ajaxError: \err -> eAjaxError err
+      , non200: \p ->
+        let statusCode = problemStatus p
+        in case statusCode of
+          401 -> e401 p
+          404 -> e404 p
+          _ -> eUnexpected p
+      }
+
 
 putEventType
   ∷ ∀ r m
@@ -105,13 +126,34 @@ putEventType
   -> EventType
   -> m (NakadiResponse (forbidden ∷ E403, notFound ∷ E404, unprocessableEntity ∷ E422) Unit)
 putEventType spanCtx (EventTypeName name) eventType = do
-  res <- putRequest ("/event-types/" <> name) spanCtx eventType >>= request >>= deserialise_
-  res # catchErrors case _ of
-    p @ { status: 401 } -> pure $ lmap e401 res
-    p @ { status: 403 } -> pure $ lmap e403 res
-    p @ { status: 404 } -> pure $ lmap e404 res
-    p @ { status: 422 } -> pure $ lmap e422 res
-    p -> unhandled p
+  res <- deserialise_ <$> (putRequest ("/event-types/" <> name) spanCtx eventType >>= request)
+  pure $ lmap mapErrorVariant res
+  where
+    mapErrorVariant = match
+      { ajaxError: \err -> eAjaxError err
+      , non200: \p ->
+        let statusCode = problemStatus p
+        in case statusCode of
+          401 -> e401 p
+          403 -> e403 p
+          404 -> e404 p
+          422 -> e422 p
+          _ -> eUnexpected p
+      }
+
+-- TODO
+-- wrapErrorCodes
+--   :: forall r1 r2
+--   . Union r1 (ajaxError :: AX.Error) r2
+--   => (Int -> Problem -> Variant r1)
+--   -> (Variant (ajaxError :: AX.Error, non200 :: Problem))
+--   -> Variant r2
+-- wrapErrorCodes fn res = match
+--     { ajaxError: \err -> unsafeCoerce $ eAjaxError err -- ((eAjaxError err) :: (Variant (ajaxError :: AX.Error | r1)))
+--     , non200: \p ->
+--       let statusCode = problemStatus p
+--       in expand $ fn statusCode p
+--     } res
 
 deleteEventType
   ∷ ∀ r m
@@ -121,12 +163,20 @@ deleteEventType
   => EventTypeName
   -> m (NakadiResponse (forbidden ∷ E403, notFound ∷ E404) Unit)
 deleteEventType (EventTypeName name) = do
-  res <- deleteRequest ("/event-types/" <> name) >>= request  >>= deserialise_
-  res # catchErrors case _ of
-    p @ { status: 401 } -> pure $ lmap e401 res
-    p @ { status: 403 } -> pure $ lmap e403 res
-    p @ { status: 404 } -> pure $ lmap e404 res
-    p -> unhandled p
+  res <- deserialise_ <$> (deleteRequest ("/event-types/" <> name) >>= request)
+  pure $ lmap mapErrorVariant res
+  where
+    mapErrorVariant = match
+      { ajaxError: \err -> eAjaxError err
+      , non200: \p ->
+        let statusCode = problemStatus p
+        in case statusCode of
+          401 -> e401 p
+          403 -> e403 p
+          404 -> e404 p
+          _ -> eUnexpected p
+      }
+
 
 getCursorDistances
   ∷ ∀ r m
@@ -140,11 +190,18 @@ getCursorDistances
 getCursorDistances spanCtx (EventTypeName name) queries = do
   let path = "/event-types/" <> name <> "/cursor-distances"
   res <- postRequest path spanCtx queries >>= request >>= deserialise
-  res # catchErrors case _ of
-    p @ { status: 401 } -> pure $ lmap e401 res
-    p @ { status: 403 } -> pure $ lmap e403 res
-    p @ { status: 404 } -> pure $ lmap e404 res
-    p -> unhandled p
+  pure $ lmap mapErrorVariant res
+  where
+    mapErrorVariant = match
+      { ajaxError: \err -> eAjaxError err
+      , non200: \p ->
+        let statusCode = problemStatus p
+        in case statusCode of
+          401 -> e401 p
+          403 -> e403 p
+          404 -> e404 p
+          _ -> eUnexpected p
+      }
 
 getCursorLag
   ∷ ∀ r m
@@ -158,11 +215,19 @@ getCursorLag
 getCursorLag spanCtx (EventTypeName name) cursors = do
   let path = "/event-types/" <> name <> "/cursors-lag"
   res <- postRequest path spanCtx cursors >>= request >>= deserialise
-  res # catchErrors case _ of
-    p @ { status: 401 } -> pure $ lmap e401 res
-    p @ { status: 403 } -> pure $ lmap e403 res
-    p @ { status: 404 } -> pure $ lmap e404 res
-    p -> unhandled p
+  pure $ lmap mapErrorVariant res
+  where
+    mapErrorVariant = match
+      { ajaxError: \err -> eAjaxError err
+      , non200: \p ->
+        let statusCode = problemStatus p
+        in case statusCode of
+          401 -> e401 p
+          403 -> e403 p
+          404 -> e404 p
+          _ -> eUnexpected p
+      }
+
 
 postEvents
   ∷ ∀ r m
@@ -178,22 +243,22 @@ postEvents spanCtx (EventTypeName name) events = do
   response <- postRequest path spanCtx events >>= request
   case response of
     Right { body, status: StatusCode statusCode } -> do
-      res1 <- case statusCode of
-        code | code == 422 || code == 207 -> map Just <$> readJson body
-        code | code # between 200 299 -> (pure <<< pure) Nothing
-        _ -> deserialiseProblem body
-      res2 <- res1 # catchErrors case _ of -- is this all correct?
-        p @ { status: 403 } -> pure $ lmap e403 res1
-        p @ { status: 404 } -> pure $ lmap e404 res1
-        p -> unhandled p
-      pure $ res2 >>= case _ of
-        Just batchProblem ->
-          if statusCode == 207
-          then Left $ e207 batchProblem -- this is treated as an error
-          else Left $ e422Publish batchProblem
-        Nothing -> Right unit
+      case statusCode of
+        code | code == 207 -> case readJSON body of
+          Right x -> pure $ Left $ e207 x
+          Left err -> pure $ Left $ eUnexpected $ HttpErrorResponse { status: code, body } -- response probably not from Nakadi
+        code | code == 422 -> case readJSON body of
+          Right x -> pure $ Left $ e422Publish x
+          Left err -> pure $ Left $ eUnexpected $ HttpErrorResponse { status: code, body } -- response probably not from Nakadi
+        code | code # between 200 299 -> pure $ Right unit
+        code -> pure $ Left $
+          let problem = deserialiseProblem statusCode body
+          in case code of
+            403 -> e403 problem
+            404 -> e404 problem
+            _ -> eUnexpected problem
     Left error ->
-      formatErr error
+      pure $ Left $ eAjaxError error
 
 postSubscription
   ∷ ∀ r m
@@ -206,11 +271,18 @@ postSubscription
 postSubscription spanCtx subscription = do
   let path = "/subscriptions"
   res <- postRequest path spanCtx subscription >>= request >>= deserialise
-  res # catchErrors case _ of
-    p @ { status: 400 } -> pure $ lmap e400 res
-    p @ { status: 401 } -> pure $ lmap e401 res
-    p @ { status: 422 } -> pure $ lmap e422 res
-    p -> unhandled p
+  pure $ lmap mapErrorVariant res
+  where
+    mapErrorVariant = match
+      { ajaxError: \err -> eAjaxError err
+      , non200: \p ->
+        let statusCode = problemStatus p
+        in case statusCode of
+          400 -> e401 p
+          401 -> e401 p
+          422 -> e422 p
+          _ -> eUnexpected p
+      }
 
 commitCursors
   ∷ ∀ r m
@@ -226,12 +298,19 @@ commitCursors (SubscriptionId id) (XNakadiStreamId header) items = do
   let spanCtx = Nothing
   standardRequest <- postRequest path spanCtx { items }
   let req = standardRequest { headers = standardRequest.headers <> [RequestHeader "X-Nakadi-StreamId" header] }
-  res <- request req >>= deserialise_
-  res # catchErrors case _ of
-    p @ { status: 401 } -> pure $ lmap e401 res
-    p @ { status: 403 } -> pure $ lmap e403 res
-    p @ { status: 422 } -> pure $ lmap e422 res
-    p -> unhandled p
+  res <- deserialise_ <$> request req
+  pure $ lmap mapErrorVariant res
+  where
+    mapErrorVariant = match
+      { ajaxError: \err -> eAjaxError err
+      , non200: \p ->
+        let statusCode = problemStatus p
+        in case statusCode of
+          401 -> e401 p
+          403 -> e403 p
+          422 -> e422 p
+          _ -> eUnexpected p
+      }
 
 
 foreign import removeRequestTimeout ∷ Request -> Effect Unit

@@ -11,6 +11,7 @@ module Nakadi.Client.Stream
 
 import Prelude
 
+import Affjax as AX
 import Control.Monad.Reader (ReaderT, runReaderT)
 import Data.Array (length)
 import Data.DateTime.Instant (unInstant)
@@ -34,16 +35,16 @@ import Effect.Ref as Ref
 import Foreign (Foreign)
 import Foreign.Object as Object
 import Gzip.Gzip as Gzip
-import Nakadi.Client.Internal (jsonErr, unhandled)
+import Nakadi.Client.Internal (deserialiseProblem, jsonErr)
 import Nakadi.Client.Types (NakadiResponse, Env)
-import Nakadi.Errors (E400, E401, E403, E404, E409, E422, e400, e401, e403, e404, e409)
-import Nakadi.Types (Event, StreamParameters, SubscriptionCursor, SubscriptionEventStreamBatch, SubscriptionId, XNakadiStreamId(..), SubscriptionStats)
+import Nakadi.Errors (E400, E401, E403, E404, E409, E422, E_UNEXPECTED, e400, e401, e403, e404, e409, eUnexpected)
+import Nakadi.Types (Event, Problem(..), StreamParameters, SubscriptionCursor, SubscriptionEventStreamBatch, SubscriptionId, SubscriptionStats, XNakadiStreamId(..))
 import Node.Encoding (Encoding(..))
 import Node.HTTP.Client as HTTP
 import Node.Stream (Read, Stream, onData, onDataString, onEnd, onError, pipe)
 import Node.Stream as Stream
 import Node.Stream.Util (BufferSize, allocUnsafe, splitAtNewline)
-import Simple.JSON (E, readJSON)
+import Simple.JSON (E)
 import Simple.JSON as JSON
 
 type StreamError = Variant
@@ -52,6 +53,8 @@ type StreamError = Variant
   , forbidden  ∷ E403
   , notFound   ∷ E404
   , conflict   ∷ E409
+  , unexpected :: E_UNEXPECTED
+  , ajaxError  :: AX.Error
   )
 
 type CommitError = Variant
@@ -59,6 +62,8 @@ type CommitError = Variant
   , forbidden ∷ E403
   , notFound ∷ E404
   , unprocessableEntity ∷ E422
+  , unexpected :: E_UNEXPECTED
+  , ajaxError :: AX.Error
   )
 
 type StreamReturn = { result :: StreamResult, stats :: SubscriptionStats }
@@ -223,14 +228,13 @@ handleRequestErrors httpStatus response cb = do
     $ runAff_ handleAffResult do
         str <- liftEffect $ Ref.read buffer
         liftEffect <<< Console.log $ "Nakadi responded with http status " <> show httpStatus <> " response body: " <> str -- TODO remove
-        res <- (readJSON >>> either jsonErr pure) str
-        case res of
-          p@{ status: 400 } -> pure $ e400 res
-          p@{ status: 401 } -> pure $ e401 res
-          p@{ status: 403 } -> pure $ e403 res
-          p@{ status: 404 } -> pure $ e404 res
-          p@{ status: 409 } -> pure $ e409 res
-          p -> unhandled p
+        case deserialiseProblem httpStatus str of
+          p@(NakadiErrorResponse { status: 400 }) -> pure $ e400 p
+          p@(NakadiErrorResponse { status: 401 }) -> pure $ e401 p
+          p@(NakadiErrorResponse { status: 403 }) -> pure $ e403 p
+          p@(NakadiErrorResponse { status: 404 }) -> pure $ e404 p
+          p@(NakadiErrorResponse { status: 409 }) -> pure $ e409 p
+          p -> pure $ eUnexpected p
   where
     handleAffResult ∷ _ -> Effect _
     handleAffResult = case _ of

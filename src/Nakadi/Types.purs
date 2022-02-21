@@ -180,13 +180,29 @@ type Partition =
   , unconsumed_events       :: Maybe Int
   }
 
-type Problem =
-  { type     :: Maybe String
-  , title    :: String
-  , status   :: Int
-  , detail   :: Maybe String
-  , instance :: Maybe String
-  }
+data Problem
+  = HttpErrorResponse { status :: Int, body :: String } -- http response received from some proxy along the way
+  | NakadiErrorResponse -- the format of error responses sent by Nakadi
+      { type     :: Maybe String
+      , title    :: String
+      , status   :: Int
+      , detail   :: Maybe String
+      , instance :: Maybe String
+      }
+
+
+problemStatus :: Problem -> Int
+problemStatus (HttpErrorResponse { status }) = status
+problemStatus (NakadiErrorResponse { status }) = status
+
+instance problemEq :: Eq Problem where
+  eq (HttpErrorResponse x) (HttpErrorResponse y) = x == y
+  eq (NakadiErrorResponse x) (NakadiErrorResponse y) = x == y
+  eq _ _ = false
+
+instance problemShow :: Show Problem where
+  show (HttpErrorResponse { status, body }) = "HttpErrorResponse { status = " <> show status <> ", body = " <> body <> "}"
+  show (NakadiErrorResponse x) = show x
 
 type ShiftedCursor =
   { partition :: String -- | Id of the partition pointed to by this cursor

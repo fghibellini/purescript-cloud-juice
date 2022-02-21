@@ -5,6 +5,7 @@ import Prelude
 import Data.Newtype (class Newtype)
 import Data.Variant (SProxy(..), Variant, inj)
 import Nakadi.Types (Problem, BatchItemResponse)
+import Affjax as AX
 
 newtype E400 = E400 Problem
 derive instance ntE400 :: Newtype E400 _
@@ -53,6 +54,18 @@ derive newtype instance eqE422 :: Eq E422
 _unprocessableEntity = SProxy :: SProxy "unprocessableEntity"
 e422 :: ∀ v. Problem -> Variant (unprocessableEntity :: E422 | v)
 e422 = inj _unprocessableEntity <<< E422
+
+newtype E_UNEXPECTED = E_UNEXPECTED Problem
+derive instance ntE_UNEXPECTED :: Newtype E_UNEXPECTED _
+derive newtype instance showE_UNEXPECTED :: Show E_UNEXPECTED
+derive newtype instance eqE_UNEXPECTED :: Eq E_UNEXPECTED
+_unexpected = SProxy :: SProxy "unexpected"
+eUnexpected :: ∀ v. Problem -> Variant (unexpected :: E_UNEXPECTED | v)
+eUnexpected response = inj _unexpected $ E_UNEXPECTED response
+
+_ajaxError = SProxy :: SProxy "ajaxError"
+eAjaxError :: ∀ v. AX.Error -> Variant (ajaxError :: AX.Error | v)
+eAjaxError err = inj _ajaxError err
 
 newtype E207 = E207 (Array BatchItemResponse)
 derive instance ntE207 :: Newtype E207 _

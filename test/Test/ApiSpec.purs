@@ -50,6 +50,10 @@ env =
 run :: ∀ m a. ReaderT (Env ()) m a -> m a
 run = flip runReaderT env
 
+rightShouldEqual :: forall a e . Show a => Eq a => Either e a -> a -> Aff Unit
+rightShouldEqual (Left _) _ = fail "rightShouldEqual: expected Right but got Left"
+rightShouldEqual (Right x) y = x `shouldEqual` y
+
 spec :: Spec Unit
 spec =
   describe "api" $ do
@@ -64,27 +68,27 @@ spec =
         res <- run <<< runExceptT $ do
           types <- ExceptT $ (map <<< lmap $ expand) getEventTypes
           traverse_ (ExceptT <<< deleteEventType) (types <#> _.name)
-        res `shouldEqual` (Right unit)
+        res `rightShouldEqual` unit
       pending' "POST" $ do
         res <- run $ postEventType Nothing undefinedET
-        res `shouldEqual` (Right unit)
+        res `rightShouldEqual` unit
       pending' "GET" $ do
         res <- run getEventTypes
-        (res <#> (map _.name)) `shouldEqual` (Right [undefinedETN])
+        (res <#> (map _.name)) `rightShouldEqual` [undefinedETN]
 
     describe "/event-types/{name}" $ do
       pending' "GET" $ do
         et <- run $ getEventType undefinedETN
-        (et <#> _.name) `shouldEqual` (Right undefinedETN)
+        (et <#> _.name) `rightShouldEqual` undefinedETN
       pending' "PUT" $ do
         let modified = undefinedET { owning_application = OwningApplication "other-app" }
         put <- run $ putEventType Nothing undefinedETN modified
-        put `shouldEqual` (Right unit)
+        put `rightShouldEqual` unit
         get <- run $ getEventType undefinedETN
-        (get <#> _.owning_application) `shouldEqual` (Right modified.owning_application)
+        (get <#> _.owning_application) `rightShouldEqual` modified.owning_application
       pending' "DELETE" $ do
         res <- run $ deleteEventType undefinedETN
-        res `shouldEqual` (Right unit)
+        res `rightShouldEqual` unit
 
     describe "/event-types/{name}/cursor-distances" $ do
       pending "POST"
@@ -162,7 +166,7 @@ spec =
 
         let subs = Minimal.subscription (OwningApplication "cloud-juice") undefinedETN
         sub <- run $ postSubscription Nothing subs
-        (void sub) `shouldEqual` (Right unit)
+        (void sub) `rightShouldEqual` unit
         let subId = fromMaybe (SubscriptionId "nein") (hush sub >>= _.id)
         events     <- liftEffect $ Ref.new 0
         characters <- liftEffect $ Ref.new 0

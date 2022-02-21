@@ -8,13 +8,14 @@ module Nakadi.Client.Types
 
 import Prelude
 
+import Affjax as AX
 import Data.Either (Either)
 import Data.Maybe (Maybe)
 import Data.Newtype (class Newtype)
 import Data.Variant (Variant)
 import Effect (Effect)
 import FlowId (FlowId)
-import Nakadi.Errors (E401)
+import Nakadi.Errors (E401, E_UNEXPECTED)
 import Nakadi.Types (Problem)
 
 type LogWarnFn = Maybe Problem -> String -> Effect Unit
@@ -28,7 +29,7 @@ type Env r =
   | r
   }
 
-type NakadiResponse r a = Either (Variant (unauthorized :: E401 | r)) a
+type NakadiResponse r a = Either (Variant (ajaxError :: AX.Error, unexpected :: E_UNEXPECTED, unauthorized :: E401 | r)) a
 
 newtype SpanCtx = SpanCtx String
 

@@ -17,12 +17,13 @@ import Data.HTTP.Method (Method(..))
 import Data.Maybe (Maybe(..))
 import Data.Newtype (unwrap)
 import Data.Tuple (Tuple(..))
+import Data.Variant (SProxy(..), Variant, inj)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
 import Effect.Exception (Error, error)
 import Foreign (ForeignError, renderForeignError)
 import Nakadi.Client.Types (Env, SpanCtx(..))
-import Nakadi.Types (Problem)
+import Nakadi.Types (Problem(..))
 import Simple.JSON (class ReadForeign, class WriteForeign, readJSON, writeJSON)
 
 request :: ∀ a m. MonadAff m => Request a -> m (Either AX.Error (Response a))
@@ -82,32 +83,41 @@ formatErr = throwError <<< error <<< printError
 jsonErr :: ∀ m f a.  MonadThrow Error m => Foldable f => f ForeignError -> m a
 jsonErr = throwError <<< error <<< foldMap renderForeignError
 
-deserialise_ :: ∀ m . MonadThrow Error m => Either AX.Error (Response String) -> m (Either Problem Unit)
-deserialise_ = case _ of
+-- data AjaxCallResult a
+--   = ACR_200 a -- expected value
+--   | ACR_Non200 Problem -- unexpected response
+--   | ACR_Error AX.Error -- network issue (no response)
+
+type AjaxCallResult a = Either (Variant (ajaxError :: AX.Error, non200 :: Problem)) a
+
+ajaxAssert2xx :: Either AX.Error (Response String) -> AjaxCallResult String
+ajaxAssert2xx = case _ of
   Right { body, status: StatusCode code } ->
     if code # between 200 299
-      then pure <<< pure $ unit
-      else deserialiseProblem body
+      then Right body
+      else Left $ inj (SProxy :: SProxy "non200") $ deserialiseProblem code body
   Left error ->
-    formatErr error
+    Left $ inj (SProxy :: SProxy "ajaxError") error
 
-deserialise :: ∀ m a . MonadThrow Error m => ReadForeign a => Either AX.Error (Response String) -> m (Either Problem a)
-deserialise = case _ of
-    Right { body, status: StatusCode code } ->
-      if code # between 200 299
-        then readJson body
-        else deserialiseProblem body
-    Left error ->
-      formatErr error
+deserialise_ :: Either AX.Error (Response String) -> AjaxCallResult Unit
+deserialise_ res = unit <$ ajaxAssert2xx res
 
-deserialiseProblem :: ∀ m a b. MonadThrow Error m => ReadForeign a => String -> m (Either a b)
-deserialiseProblem = readJSON >>> either jsonErr (pure <<< Left)
+-- WARNING: this functions throws if the 200 response cannot be parsed
+deserialise :: ∀ m a . MonadThrow Error m => ReadForeign a => Either AX.Error (Response String) -> m (AjaxCallResult a)
+deserialise res = case ajaxAssert2xx res of
+  Right body -> Right <$> readJsonOrThrow body
+  Left err -> pure (Left err)
 
-readJson :: ∀ m f a. MonadThrow Error m => ReadForeign a => Applicative f => String -> m (f a)
-readJson = readJSON >>> either jsonErr (pure <<< pure)
+deserialiseProblem :: Int -> String -> Problem
+deserialiseProblem status responseText = case readJSON responseText of
+  Left _ -> HttpErrorResponse { status, body: responseText }
+  Right parsedNakadiRes -> NakadiErrorResponse parsedNakadiRes
 
-unhandled :: ∀ a m. MonadThrow Error m => Problem -> m a
-unhandled p = throwError <<< error $ "Unhandled response code " <> writeJSON p
+readJsonOrThrow :: ∀ m a. MonadThrow Error m => ReadForeign a => String -> m a
+readJsonOrThrow = readJSON >>> either jsonErr pure
+
+-- unhandled :: ∀ a m. MonadThrow Error m => Problem -> m a
+-- unhandled p = throwError <<< error $ "Unhandled response code " <> writeJSON p
 
 catchErrors
   :: ∀ a b m m'
