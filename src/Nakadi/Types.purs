@@ -200,9 +200,22 @@ instance problemEq :: Eq Problem where
   eq (NakadiErrorResponse x) (NakadiErrorResponse y) = x == y
   eq _ _ = false
 
+instance problemOrd :: Ord Problem where
+  compare (HttpErrorResponse _) (NakadiErrorResponse _) = LT
+  compare (NakadiErrorResponse _) (HttpErrorResponse _) = GT
+  compare (NakadiErrorResponse x) (NakadiErrorResponse y) = compare x y
+  compare (HttpErrorResponse x) (HttpErrorResponse y) = compare x y
+
 instance problemShow :: Show Problem where
   show (HttpErrorResponse { status, body }) = "HttpErrorResponse { status = " <> show status <> ", body = " <> body <> "}"
   show (NakadiErrorResponse x) = show x
+
+instance problemWriteForeign :: WriteForeign Problem where
+  writeImpl (HttpErrorResponse x) = writeImpl x
+  writeImpl (NakadiErrorResponse x) = writeImpl x
+
+instance problemReadForeign :: ReadForeign Problem where
+  readImpl input = (NakadiErrorResponse <$> readImpl input) <|> (HttpErrorResponse <$> readImpl input)
 
 type ShiftedCursor =
   { partition :: String -- | Id of the partition pointed to by this cursor
