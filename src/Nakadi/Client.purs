@@ -232,7 +232,6 @@ getCursorLag spanCtx (EventTypeName name) cursors = do
 postEvents
   ∷ ∀ r m
    . MonadAsk (Env r) m
-  => MonadThrow Error m
   => MonadAff m
   => Maybe SpanCtx
   -> EventTypeName
