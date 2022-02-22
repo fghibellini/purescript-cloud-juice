@@ -14,12 +14,10 @@ import Prelude
 import Affjax as AX
 import Control.Monad.Reader (ReaderT, runReaderT)
 import Data.Array (length)
-import Data.DateTime.Instant (unInstant)
 import Data.Either (Either(..), either)
 import Data.Foldable (traverse_)
-import Data.Function (on)
+import Data.JSDate (now)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Data.Newtype (unwrap, wrap)
 import Data.String as String
 import Data.Variant (Variant)
 import Effect (Effect)
@@ -30,7 +28,6 @@ import Effect.Aff.AVar as AVarAff
 import Effect.Class (liftEffect)
 import Effect.Class.Console as Console
 import Effect.Exception (error, throwException)
-import Effect.Now (now)
 import Effect.Ref as Ref
 import Foreign (Foreign)
 import Foreign.Object as Object
@@ -38,6 +35,7 @@ import Gzip.Gzip as Gzip
 import Nakadi.Client.Internal (deserialiseProblem, jsonErr)
 import Nakadi.Client.Types (NakadiResponse, Env)
 import Nakadi.Errors (E400, E401, E403, E404, E409, E422, E_UNEXPECTED, e400, e401, e403, e404, e409, eUnexpected)
+import Nakadi.Helpers (diffJSDate)
 import Nakadi.Types (Event, Problem(..), StreamParameters, SubscriptionCursor, SubscriptionEventStreamBatch, SubscriptionId, SubscriptionStats, XNakadiStreamId(..))
 import Node.Encoding (Encoding(..))
 import Node.HTTP.Client as HTTP
@@ -205,17 +203,16 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated, sub
       batch <- either jsonErr pure (parseFn batchJson)
       traverse_ eventHandler batch.events
       commitResult <- runReaderT (commit [ batch.cursor ]) env
+      t1 <- liftEffect now
       case commitResult of
         Left err -> do
-          t1 <- liftEffect now
-          let dt = wrap $ on (-) (unwrap <<< unInstant) t1 t0
+          let dt = diffJSDate t1 t0
           pure $ Left (FailedToCommit { processingTime: dt, commitError: err })
         Right other -> do
-          commitTime <- liftEffect now
           _ <- liftEffect $ Ref.modify (\stats -> stats
             { committedBatchCount = stats.committedBatchCount + 1
             , committedEventCount = stats.committedEventCount + maybe 0 length batch.events
-            , lastCommitTime = Nothing -- TODO
+            , lastCommitTime = Just t1
             }) subscriptionStats
           pure $ Right unit
 

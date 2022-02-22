@@ -83,30 +83,36 @@ formatErr = throwError <<< error <<< printError
 jsonErr :: ∀ m f a.  MonadThrow Error m => Foldable f => f ForeignError -> m a
 jsonErr = throwError <<< error <<< foldMap renderForeignError
 
--- data AjaxCallResult a
---   = ACR_200 a -- expected value
---   | ACR_Non200 Problem -- unexpected response
---   | ACR_Error AX.Error -- network issue (no response)
-
-type AjaxCallResult a = Either (Variant (ajaxError :: AX.Error, non200 :: Problem)) a
+type AjaxCallResult a = Either (Variant (ajaxError :: AX.Error, httpError :: Problem)) a
 
 ajaxAssert2xx :: Either AX.Error (Response String) -> AjaxCallResult String
 ajaxAssert2xx = case _ of
   Right { body, status: StatusCode code } ->
     if code # between 200 299
       then Right body
-      else Left $ inj (SProxy :: SProxy "non200") $ deserialiseProblem code body
+      else Left $ inj (SProxy :: SProxy "httpError") $ deserialiseProblem code body
   Left error ->
     Left $ inj (SProxy :: SProxy "ajaxError") error
 
-deserialise_ :: Either AX.Error (Response String) -> AjaxCallResult Unit
-deserialise_ res = unit <$ ajaxAssert2xx res
-
--- WARNING: this functions throws if the 200 response cannot be parsed
-deserialise :: ∀ m a . MonadThrow Error m => ReadForeign a => Either AX.Error (Response String) -> m (AjaxCallResult a)
-deserialise res = case ajaxAssert2xx res of
+-- A request can have 3 possible outcomes (from the perspective of this function)
+--
+-- 1. successfull network call & status code == 2xx
+--    => in this case we simply parse the response JSON and return it in a `Right`
+-- 2. successfull network call & status code != 2xx
+--    => here we try to parse the response body into a `Problem`` (which has two constructors,
+--       one for responses from Nakadi and one for "malformed responses" e.g. something received from a load balancer)
+-- 3. unsuccessfull network call i.e. we were not able to receive any response
+--    => this ends up producing the `Left (Variant (ajaxError :: AX.Error, ...))` of the result.
+--
+-- WARNING: this functions throws if the 200 response JSON cannot be parsed
+processResponseWithBody :: ∀ m a . MonadThrow Error m => ReadForeign a => Either AX.Error (Response String) -> m (AjaxCallResult a)
+processResponseWithBody res = case ajaxAssert2xx res of
   Right body -> Right <$> readJsonOrThrow body
   Left err -> pure (Left err)
+
+-- Same as `processResponseWithBody` but the body a successfull call is ignored
+processResponseNoBody :: Either AX.Error (Response String) -> AjaxCallResult Unit
+processResponseNoBody res = unit <$ ajaxAssert2xx res
 
 deserialiseProblem :: Int -> String -> Problem
 deserialiseProblem status responseText = case readJSON responseText of
@@ -115,17 +121,3 @@ deserialiseProblem status responseText = case readJSON responseText of
 
 readJsonOrThrow :: ∀ m a. MonadThrow Error m => ReadForeign a => String -> m a
 readJsonOrThrow = readJSON >>> either jsonErr pure
-
--- unhandled :: ∀ a m. MonadThrow Error m => Problem -> m a
--- unhandled p = throwError <<< error $ "Unhandled response code " <> writeJSON p
-
-catchErrors
-  :: ∀ a b m m'
-   . Applicative m
-  => Applicative m'
-  => (a -> m (m' b))
-  -> Either a b
-  -> m (m' b)
-catchErrors f = case _ of
-  Left p -> f p
-  Right r -> pure <<< pure $ r
