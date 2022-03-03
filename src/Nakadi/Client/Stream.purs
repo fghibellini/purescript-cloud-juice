@@ -111,7 +111,7 @@ postStream postArgs@{ resultVar, bufsize, batchQueue, batchConsumerLoopTerminate
   let httpStatusCode = HTTP.statusCode response
   if httpStatusCode /= 200
     then do
-      handleRequestErrors httpStatusCode stream \streamReturn -> do
+      handleRequestErrors env httpStatusCode stream \streamReturn -> do
           void $ AVar.tryPut streamReturn resultVar
           void $ AVar.tryPut (Right unit) batchConsumerLoopTerminated
     else do
@@ -124,12 +124,6 @@ postStream postArgs@{ resultVar, bufsize, batchQueue, batchConsumerLoopTerminate
       if cursors == mempty then do pure (Right unit)
       else
         commitCursors subscriptionId xStreamId cursors
-
-handlePutAVarError ∷ Either Error Unit -> Effect Unit
-handlePutAVarError = case _ of
-    Left e -> do
-      liftEffect $ throwException (error $ "Error setting AVar " <> show e)
-    Right a -> pure unit
 
 handleRequest
   ∷ ∀ env r
@@ -151,6 +145,7 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated, sub
   -- 2. an AVar is used as a queue since the docs mention that on multiple puts it will behave like a FIFO sequence
   -- 3. the queue should not grow too big as it's limited by the configuration of the Nakadi consumer
   --    (you will only receive more batches once you commit the cursors)
+  env.logWarn Nothing "[debug] entered handleRequest"
   buffer <- liftEffect $ allocUnsafe bufsize
   callback <- splitAtNewline buffer bufsize handleWorkerError enqueueBatch
   onData resStream callback
@@ -161,13 +156,16 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated, sub
         terminateQueue (ErrorThrown e)
     )
   launchAff_ do -- listen for resultVar changes from upstream (i.e. from the caller of handleRequest)
+    liftEffect $ env.logWarn Nothing "[debug] handleRequest resultVar handler"
     result <- AVarAff.read resultVar
     liftEffect $ terminateQueue result
   flip runAff_ batchConsumerLoop case _ of
     Right res -> do
+      env.logWarn Nothing "[debug] handleRequest - batchConsumerLoop terminated successfully"
       void $ AVar.tryPut res resultVar
       void $ AVar.tryPut (Right unit) batchConsumerLoopTerminated
     Left e -> do
+      env.logWarn Nothing "[debug] handleRequest - batchConsumerLoop terminated with an error"
       let err = error $ "Error in processing " <> show e
       void $ AVar.tryPut (ErrorThrown err) resultVar
       void $ AVar.tryPut (Left err) batchConsumerLoopTerminated
@@ -217,8 +215,9 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated, sub
           pure $ Right unit
 
 
-handleRequestErrors ∷ ∀ r. Int -> Stream (read ∷ Read | r) -> (StreamResult -> Effect Unit) -> Effect Unit
-handleRequestErrors httpStatus response cb = do
+handleRequestErrors ∷ ∀ r s. Env s -> Int -> Stream (read ∷ Read | r) -> (StreamResult -> Effect Unit) -> Effect Unit
+handleRequestErrors env httpStatus response cb = do
+  env.logWarn Nothing "[debug] entered handleRequestErrors"
   buffer <- liftEffect $ Ref.new ""
   onDataString response UTF8 (\x -> Ref.modify_ (_ <> x) buffer)
   onEnd response

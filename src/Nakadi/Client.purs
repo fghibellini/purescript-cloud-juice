@@ -394,11 +394,16 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
   -- We use the AVar `resultVar` to signal termination of the Nakadi consumption.
   -- Even once `resultVar`` is populated we can still have a running batch handler or batches
   -- queued in `batchQueue`, so `batchConsumerLoopTerminated` is an additional signal that we wait for before returning.
+  liftEffect $ env.logWarn Nothing "[debug] streamSubscriptionEvents: invoking listen"
   requestAgent <- liftEffect $ listen postArgs
+  liftEffect $ env.logWarn Nothing "[debug] streamSubscriptionEvents: waiting for resultVar"
   res <- liftAff $ AVar.read resultVar
+  liftEffect $ env.logWarn Nothing "[debug] streamSubscriptionEvents: waiting for batchConsumerLoopTerminated"
   consumerRes <- liftAff $ AVar.read batchConsumerLoopTerminated
   -- without this the server takes a loooong time to terminate (which is painful in the tests) see https://nodejs.org/api/http.html#agentdestroy
+  liftEffect $ env.logWarn Nothing "[debug] streamSubscriptionEvents: invoking destroyAgent"
   liftEffect $ destroyAgent requestAgent
+  liftEffect $ env.logWarn Nothing "[debug] streamSubscriptionEvents: destroyAgent returned"
   -- the batches are queued up, so even if the connection ends up being terminated by Nakadi
   -- we still want to return an error if any of the queued batches throws an error
   stats <- liftEffect $ Ref.read subscriptionStats
