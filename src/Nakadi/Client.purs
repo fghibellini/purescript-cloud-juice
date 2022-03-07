@@ -312,7 +312,8 @@ commitCursors (SubscriptionId id) (XNakadiStreamId header) items = do
       }
 
 
-foreign import removeRequestTimeout ∷ Request -> Effect Unit
+foreign import setRequestTimeout ∷ Number -> Request -> Effect Unit
+foreign import requestOnError ∷ Request -> (Error -> Effect Unit) -> Effect Unit
 
 streamSubscriptionEvents
   ∷ ∀ r m
@@ -357,7 +358,10 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
 
       let requestCallback = postStream postArgs streamParameters commitCursors sid eventHandler env
       req <- HTTP.request options requestCallback
-      removeRequestTimeout req
+      setRequestTimeout (unwrap env.timeout) req
+      requestOnError req \err -> do
+          env.logWarn Nothing "[debug] streamSubscriptionEvents request 'error' handler invoked"
+          void $ AV.tryPut (ErrorThrown err) resultVar
       runAffAndPropagateError resultVar do
         sendBodyAndEnd req streamParameters
       pure requestAgent
@@ -366,8 +370,12 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
     runAffAndPropagateError :: forall a. AVar StreamResult -> Aff a -> Effect Unit
     runAffAndPropagateError avar aff =
       flip runAff_ aff \x -> case x of
-        Left err -> void $ AV.tryPut (ErrorThrown err) avar
-        Right _ -> pure unit
+        Left err -> do
+          env.logWarn Nothing "[debug] sendBodyAndEnd failed with an error"
+          void $ AV.tryPut (ErrorThrown err) avar
+        Right _ -> do
+          env.logWarn Nothing "[debug] sendBodyAndEnd completed successfully"
+          pure unit
 
     sendBodyAndEnd :: forall a. WriteForeign a => Request -> a -> Aff Unit
     sendBodyAndEnd req body = do

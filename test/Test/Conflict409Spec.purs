@@ -16,7 +16,7 @@ import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), fromJust)
 import Data.UUID as UUID
 import Effect (Effect)
-import Effect.Aff (Aff, bracket, error, makeAff, nonCanceler, throwError)
+import Effect.Aff (Aff, Milliseconds(..), bracket, error, makeAff, nonCanceler, throwError)
 import Effect.Class (liftEffect)
 import Effect.Class.Console as Console
 import Effect.Ref as Ref
@@ -46,6 +46,7 @@ env =
   , baseUrl: "http://localhost"
   , token: pure "Bearer token"
   , port: nakadiPort
+  , timeout: Milliseconds 20000.0
   , logWarn: \maybeProblem msg -> Console.log $ msg <> ": " <> show maybeProblem
   }
 

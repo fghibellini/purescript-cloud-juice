@@ -12,6 +12,7 @@ import Affjax as AX
 import Data.Either (Either)
 import Data.Maybe (Maybe)
 import Data.Newtype (class Newtype)
+import Data.Time.Duration (Milliseconds)
 import Data.Variant (Variant)
 import Effect (Effect)
 import FlowId (FlowId)
@@ -25,6 +26,7 @@ type Env r =
   , baseUrl :: String
   , port    :: Int
   , token   :: Effect String
+  , timeout   :: Milliseconds
   , logWarn :: Maybe Problem -> String -> Effect Unit
   | r
   }

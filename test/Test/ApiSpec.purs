@@ -44,6 +44,7 @@ env =
   , baseUrl: "http://localhost"
   , token: pure "Bearer token"
   , port: 8080
+  , timeout: Milliseconds 20000.0
   , logWarn: \maybeProblem msg -> Console.log $ msg <> ": " <> show maybeProblem
   }
 
