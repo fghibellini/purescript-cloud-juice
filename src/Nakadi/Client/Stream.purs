@@ -157,12 +157,12 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated, sub
   buffer <- liftEffect $ allocUnsafe bufsize
   callback <- splitAtNewline buffer bufsize handleWorkerError enqueueBatch
   onData resStream callback
-  onEnd resStream (terminateQueue StreamClosed)
-  onError resStream
-    ( \e -> do
-        env.logWarn Nothing $ "Error in read stream " <> message e
-        terminateQueue (InitialRequestStreamError e)
-    )
+  onEnd resStream do
+    env.logWarn Nothing "[debug] handleRequest resStream 'end' handler"
+    terminateQueue StreamClosed
+  onError resStream \e -> do
+    env.logWarn Nothing $ "Error in read stream " <> message e
+    terminateQueue (InitialRequestStreamError e)
   launchAff_ do -- listen for resultVar changes from upstream (i.e. from the caller of handleRequest)
     liftEffect $ env.logWarn Nothing "[debug] handleRequest waiting for resultVar"
     result <- AVarAff.read resultVar
