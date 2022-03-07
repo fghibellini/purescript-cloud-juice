@@ -164,8 +164,9 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated, sub
         terminateQueue (InitialRequestStreamError e)
     )
   launchAff_ do -- listen for resultVar changes from upstream (i.e. from the caller of handleRequest)
-    liftEffect $ env.logWarn Nothing "[debug] handleRequest resultVar handler"
+    liftEffect $ env.logWarn Nothing "[debug] handleRequest waiting for resultVar"
     result <- AVarAff.read resultVar
+    liftEffect $ env.logWarn Nothing "[debug] handleRequest resultVar handler"
     liftEffect $ terminateQueue result
   flip runAff_ batchConsumerLoop case _ of
     Right res -> do
