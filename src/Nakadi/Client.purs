@@ -41,7 +41,7 @@ import Effect.Exception (Error)
 import Effect.Ref as Ref
 import Foreign.Object as Object
 import Nakadi.Client.Internal (deleteRequest, deserialiseProblem, getRequest, postRequest, processResponseNoBody, processResponseWithBody, putRequest, request)
-import Nakadi.Client.Stream (CommitResult, StreamResult(..), StreamReturn, postStream)
+import Nakadi.Client.Stream (CommitResult, InitialRequestError(..), StreamResult(..), StreamReturn, postStream)
 import Nakadi.Client.Types (Env, NakadiResponse, LogWarnFn, SpanCtx)
 import Nakadi.Errors (E207, E400, E403, E404, E409(..), E422(..), E422Publish, _conflict, _unprocessableEntity, e207, e401, e403, e404, e409, e422, e422Publish, eAjaxError, eUnexpected)
 import Nakadi.Types (Cursor, CursorDistanceQuery, CursorDistanceResult, Event, EventType, EventTypeName(..), Partition, Problem(..), StreamParameters, Subscription, SubscriptionCursor, SubscriptionId(..), XNakadiStreamId(..), emptySubscriptionStats, problemStatus)
@@ -361,7 +361,7 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
       setRequestTimeout (unwrap env.timeout) req
       requestOnError req \err -> do
           env.logWarn Nothing "[debug] streamSubscriptionEvents request 'error' handler invoked"
-          void $ AV.tryPut (ErrorThrown err) resultVar
+          void $ AV.tryPut (InitialRequestFailed $ InitialRequestOnError err) resultVar
       runAffAndPropagateError resultVar do
         sendBodyAndEnd req streamParameters
       pure requestAgent
@@ -372,7 +372,7 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
       flip runAff_ aff \x -> case x of
         Left err -> do
           env.logWarn Nothing "[debug] sendBodyAndEnd failed with an error"
-          void $ AV.tryPut (ErrorThrown err) avar
+          void $ AV.tryPut (InitialRequestFailed $ InitialRequestSendBodyError err) avar
         Right _ -> do
           env.logWarn Nothing "[debug] sendBodyAndEnd completed successfully"
           pure unit
@@ -442,6 +442,9 @@ streamSubscriptionEventsRetrying bufsize sid streamParameters eventHandler = do
               err
                 # on _conflict (\(E409 p) -> logWarn (Just p) "Failed to start streaming." $> true)
                     (default (pure true))
+            InitialRequestFailed err -> logWarn Nothing "InitialRequestFailed" $> true
+            InitialRequestStreamError err -> logWarn Nothing "InitialRequestStreamError" $> true
+            CloudJuiceInternalError err -> logWarn Nothing "CloudJuiceInternalError" $> true
             ErrorThrown err -> logWarn Nothing "Exception in consumer" $> true
             FailedToCommit { commitError } ->
               commitError

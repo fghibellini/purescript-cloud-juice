@@ -6,6 +6,7 @@ module Nakadi.Client.Stream
   , CommitError
   , CommitResult
   , BatchQueueItem(..)
+  , InitialRequestError(..)
   )
   where
 
@@ -70,7 +71,14 @@ data StreamResult
   = FailedToStream StreamError
   | FailedToCommit { processingTime :: Milliseconds, commitError :: CommitError }
   | ErrorThrown Error
+  | InitialRequestFailed InitialRequestError
+  | InitialRequestStreamError Error
+  | CloudJuiceInternalError Error
   | StreamClosed
+
+data InitialRequestError
+  = InitialRequestOnError Error
+  | InitialRequestSendBodyError Error
 
 type EventHandler = Array Event -> Aff Unit
 
@@ -153,7 +161,7 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated, sub
   onError resStream
     ( \e -> do
         env.logWarn Nothing $ "Error in read stream " <> message e
-        terminateQueue (ErrorThrown e)
+        terminateQueue (InitialRequestStreamError e)
     )
   launchAff_ do -- listen for resultVar changes from upstream (i.e. from the caller of handleRequest)
     liftEffect $ env.logWarn Nothing "[debug] handleRequest resultVar handler"
@@ -236,7 +244,7 @@ handleRequestErrors env httpStatus response cb = do
     handleAffResult = case _ of
       Left e -> do
         let err = error $ "Error in processing non-200 response from Nakadi: " <> show e
-        cb $ ErrorThrown err
+        cb $ CloudJuiceInternalError err
       Right err -> do
         cb $ FailedToStream err
 
