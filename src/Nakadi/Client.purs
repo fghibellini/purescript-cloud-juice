@@ -30,7 +30,6 @@ import Data.Time.Duration (Milliseconds(..), Seconds(..))
 import Data.Tuple (Tuple(..))
 import Data.Variant (default, match, on)
 import Effect (Effect)
-import Effect.AVar (AVar)
 import Effect.AVar as AV
 import Effect.Aff (Aff, makeAff, nonCanceler, runAff_)
 import Effect.Aff.AVar as AVar
@@ -331,7 +330,12 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
   subscriptionTime <- liftEffect now
   subscriptionStats <- liftEffect $ Ref.new (emptySubscriptionStats subscriptionTime)
   let
-    listen postArgs@{ resultVar } = do
+    listen postArgs@{ resultVar, batchConsumerLoopInitiated, batchConsumerLoopTerminated } = do
+      let
+        terminateConsumptionWithError err = do
+          void $ AV.tryPut err resultVar
+          unlessM (Ref.read batchConsumerLoopInitiated) do
+            void $ AV.tryPut (Right unit) batchConsumerLoopTerminated
       token <- env.token
       let headers' =
             [ Tuple "X-Flow-ID" (unwrap env.flowId)
@@ -361,18 +365,18 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
       setRequestTimeout (unwrap env.timeout) req
       requestOnError req \err -> do
           env.logWarn Nothing "[debug] streamSubscriptionEvents request 'error' handler invoked"
-          void $ AV.tryPut (InitialRequestFailed $ InitialRequestOnError err) resultVar
-      runAffAndPropagateError resultVar do
+          terminateConsumptionWithError (InitialRequestFailed $ InitialRequestOnError err)
+      runAffAndPropagateError terminateConsumptionWithError do
         sendBodyAndEnd req streamParameters
       pure requestAgent
 
     -- run an Aff asynchronously and if it terminates with an error write it to the AVar
-    runAffAndPropagateError :: forall a. AVar StreamResult -> Aff a -> Effect Unit
-    runAffAndPropagateError avar aff =
+    runAffAndPropagateError :: forall a. (StreamResult -> Effect Unit) -> Aff a -> Effect Unit
+    runAffAndPropagateError errorCallback aff =
       flip runAff_ aff \x -> case x of
         Left err -> do
           env.logWarn Nothing "[debug] sendBodyAndEnd failed with an error"
-          void $ AV.tryPut (InitialRequestFailed $ InitialRequestSendBodyError err) avar
+          errorCallback (InitialRequestFailed $ InitialRequestSendBodyError err)
         Right _ -> do
           env.logWarn Nothing "[debug] sendBodyAndEnd completed successfully"
           pure unit
@@ -389,12 +393,16 @@ streamSubscriptionEvents bufsize sid@(SubscriptionId subId) streamParameters eve
             makeAff \cb -> Stream.end writable (cb $ Right unit) $> nonCanceler
         ]
 
+  -- TODO
+  -- we should get rid of all these AVars and instead operate on `Aff`s
   resultVar <- liftAff AVar.empty
   batchQueue <- liftAff AVar.empty
+  batchConsumerLoopInitiated <- liftEffect $ Ref.new false
   batchConsumerLoopTerminated <- liftAff AVar.empty
   let postArgs = { resultVar
                   , bufsize
                   , batchQueue
+                  , batchConsumerLoopInitiated
                   , batchConsumerLoopTerminated
                   , subscriptionStats
                   }

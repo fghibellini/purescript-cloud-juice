@@ -92,6 +92,7 @@ postStream
   . { resultVar ∷ AVar StreamResult
     , bufsize ∷ BufferSize
     , batchQueue :: AVar BatchQueueItem
+    , batchConsumerLoopInitiated :: Ref.Ref Boolean
     , batchConsumerLoopTerminated :: AVar (Either Error Unit)
     , subscriptionStats :: Ref.Ref SubscriptionStats
     }
@@ -102,11 +103,15 @@ postStream
   -> Env r
   -> HTTP.Response
   -> Effect Unit
-postStream postArgs@{ resultVar, bufsize, batchQueue, batchConsumerLoopTerminated } streamParams commitCursors subscriptionId eventHandler env response = do
+postStream postArgs@{ resultVar, bufsize, batchQueue, batchConsumerLoopInitiated, batchConsumerLoopTerminated } streamParams commitCursors subscriptionId eventHandler env response = do
   let _ = HTTP.statusMessage response
   let isGzipped = getHeader "Content-Encoding" response <#> String.contains (String.Pattern "gzip") # fromMaybe false
   let baseStream = HTTP.responseAsStream response
-  Stream.onClose baseStream (void $ AVar.tryPut StreamClosed resultVar)
+  Stream.onClose baseStream do
+    env.logWarn Nothing "[debug] postStream Stream.onClose"
+    void $ AVar.tryPut StreamClosed resultVar
+    unlessM (Ref.read batchConsumerLoopInitiated) do
+      void $ AVar.tryPut (Right unit) batchConsumerLoopTerminated
   stream <-
     if isGzipped
     then do
@@ -137,6 +142,7 @@ handleRequest
   ∷ ∀ env r
   . { resultVar ∷ AVar StreamResult
     , bufsize ∷ BufferSize
+    , batchConsumerLoopInitiated :: Ref.Ref Boolean
     , batchQueue :: AVar BatchQueueItem
     , batchConsumerLoopTerminated :: AVar (Either Error Unit)
     , subscriptionStats :: Ref.Ref SubscriptionStats
@@ -147,7 +153,7 @@ handleRequest
   -> EventHandler
   -> Env env
   -> Effect Unit
-handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated, subscriptionStats } streamParams resStream commit eventHandler env = do
+handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated, subscriptionStats, batchConsumerLoopInitiated } streamParams resStream commit eventHandler env = do
   -- 1. the JSON batches are collected in a queue and processed by a loop
   --    of Aff operations
   -- 2. an AVar is used as a queue since the docs mention that on multiple puts it will behave like a FIFO sequence
@@ -168,6 +174,7 @@ handleRequest { resultVar, bufsize, batchQueue, batchConsumerLoopTerminated, sub
     result <- AVarAff.read resultVar
     liftEffect $ env.logWarn Nothing "[debug] handleRequest resultVar handler"
     liftEffect $ terminateQueue result
+  Ref.write true batchConsumerLoopInitiated
   flip runAff_ batchConsumerLoop case _ of
     Right res -> do
       env.logWarn Nothing "[debug] handleRequest - batchConsumerLoop terminated successfully"
