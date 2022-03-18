@@ -16,6 +16,7 @@ import Data.Time.Duration (Milliseconds)
 import Data.Variant (Variant)
 import Effect (Effect)
 import FlowId (FlowId)
+import Foreign.Object (Object)
 import Nakadi.Errors (E401, E_UNEXPECTED)
 import Nakadi.Types (Problem)
 
@@ -33,6 +34,6 @@ type Env r =
 
 type NakadiResponse r a = Either (Variant (ajaxError :: AX.Error, unexpected :: E_UNEXPECTED, unauthorized :: E401 | r)) a
 
-newtype SpanCtx = SpanCtx String
+newtype SpanCtx = SpanCtx (Object String)
 
 derive instance newtypeSpanCtx :: Newtype SpanCtx _

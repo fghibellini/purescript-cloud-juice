@@ -10,18 +10,19 @@ import Affjax.ResponseFormat as ResponseFormat
 import Affjax.StatusCode (StatusCode(..))
 import Control.Monad.Error.Class (class MonadThrow, throwError)
 import Control.Monad.Reader (class MonadAsk, ask)
-import Data.Array (concat, fromFoldable)
+import Data.Array (concat)
 import Data.Either (Either(..), either)
 import Data.Foldable (class Foldable, foldMap)
 import Data.HTTP.Method (Method(..))
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.Newtype (unwrap)
-import Data.Tuple (Tuple(..))
+import Data.Tuple (Tuple(..), uncurry)
 import Data.Variant (SProxy(..), Variant, inj)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
 import Effect.Exception (Error, error)
 import Foreign (ForeignError, renderForeignError)
+import Foreign.Object as Obj
 import Nakadi.Client.Types (Env, SpanCtx(..))
 import Nakadi.Types (Problem(..))
 import Simple.JSON (class ReadForeign, class WriteForeign, readJSON, writeJSON)
@@ -64,7 +65,7 @@ writeRequest method path spanCtx content = do
   let headers = concat
         [ req.headers
         , [ RequestHeader "Content-Type" "application/json" ]
-        , fromFoldable $ map (\(SpanCtx x) -> RequestHeader "Span_ctx" x) $ spanCtx
+        , maybe [] (\(SpanCtx obj) -> uncurry RequestHeader <$> Obj.toUnfoldable obj) spanCtx
         ]
   pure $ req
     { content = body
